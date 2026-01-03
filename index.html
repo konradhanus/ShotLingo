@@ -332,7 +332,33 @@
         .folder-toggle:hover { color: var(--primary-color); }
 
         .layer-info { flex: 1; min-width: 0; }
-        .layer-name { font-size: 0.8rem; font-weight: 500; color: #334155; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .layer-name { 
+            font-size: 0.8rem; 
+            font-weight: 500; 
+            color: #334155; 
+            white-space: nowrap; 
+            overflow: hidden; 
+            text-overflow: ellipsis; 
+            flex: 1; 
+            pointer-events: auto;
+            user-select: none;
+            padding: 2px 0;
+        }
+        .layer-name-input {
+            font-size: 0.8rem;
+            border: 1px solid var(--primary-color);
+            border-radius: 4px;
+            padding: 2px 5px;
+            width: 100%;
+            outline: none;
+            font-family: inherit;
+        }
+        .layer-item.active { background: #e0f2fe; border-left: 3px solid var(--primary-color); }
+        .layer-item.moving { 
+            background: #dbeafe; 
+            border-left: 3px solid var(--primary-color);
+            box-shadow: inset 0 0 10px rgba(59, 130, 246, 0.1);
+        }
         .layer-type { font-size: 0.65rem; color: #94a3b8; text-transform: uppercase; }
 
         .layer-actions { display: flex; gap: 5px; }
@@ -553,7 +579,7 @@
                     <i class="fa-solid fa-layer-group" style="opacity: 0.5; margin-left: 5px;"></i>
                 </div>
             </div>
-            <div class="layers-list" id="layers-list">
+            <div class="layers-list" id="layers-list" ondragover="event.preventDefault()" ondrop="handleRootDrop(event)">
                 <!-- Layers will be injected here -->
             </div>
         </div>
@@ -622,7 +648,7 @@
             if (state.undoStack.length > 50) state.undoStack.shift();
             
             // Don't serialize 'frameLabel' (runtime ref), use IDs instead
-            state.undoStack.push(JSON.stringify(canvas.toJSON(['id', 'textId', 'isFrame', 'deviceName', 'isSafeArea', 'linkedFrameId', 'folderId'])));
+            state.undoStack.push(JSON.stringify(canvas.toJSON(['id', 'textId', 'isFrame', 'deviceName', 'isSafeArea', 'linkedFrameId', 'folderId', 'customName'])));
             state.redoStack = []; // Clear redo on new action
         }
 
@@ -794,16 +820,18 @@
         }
 
         function handlePastedObject(obj) {
-            // 1. Handle Text IDs (New Instance = New ID)
-            if (obj.textId) {
-                const oldId = obj.textId;
-                const newId = uuidv4();
-                obj.textId = newId;
-                
-                // Copy translation entries for all languages
+            // 1. Handle IDs (New Instance = New ID)
+            const oldId = obj.id;
+            const newId = uuidv4();
+            obj.id = newId;
+            
+            // If it had translations, copy them over to the new ID
+            if (oldId && state.translations) {
                 Object.keys(state.translations).forEach(lang => {
-                    const text = state.translations[lang][oldId] || "";
-                    state.translations[lang][newId] = text;
+                    const text = state.translations[lang][oldId];
+                    if (text !== undefined) {
+                        state.translations[lang][newId] = text;
+                    }
                 });
             }
 
@@ -876,7 +904,7 @@
                 currentLang: state.currentLang,
                 translations: state.translations,
                 folders: state.folders,
-                canvas: canvas.toJSON(['id', 'textId', 'isFrame', 'deviceName', 'isSafeArea', 'linkedFrameId', 'clippedByFrameId', 'folderId'])
+                canvas: canvas.toJSON(['id', 'textId', 'isFrame', 'deviceName', 'isSafeArea', 'linkedFrameId', 'clippedByFrameId', 'folderId', 'customName'])
             };
 
             try {
@@ -941,11 +969,13 @@
                     canvas.loadFromJSON(savedData.canvas, function() {
                         const objects = canvas.getObjects();
                         
-                        // HEALING: Ensure all frames have IDs (for old saves)
+                        // HEALING: Ensure EVERY object has a unique ID and standardize textId to id
                         objects.forEach(obj => {
-                            if (obj.isFrame && !obj.id) {
-                                obj.id = uuidv4();
+                            if (!obj.id) {
+                                obj.id = obj.textId || uuidv4();
                             }
+                            // Cleanup old property if exists
+                            delete obj.textId;
                         });
 
                         // Restore frame-label links using IDs
@@ -1093,6 +1123,8 @@
         
         canvas.on('object:moving', function(e) {
             const obj = e.target;
+            obj.isMoving = true;
+            updateLayersPanel();
             const vpt = canvas.viewportTransform;
             
             // Snap to Grid
@@ -1117,10 +1149,17 @@
         });
 
         canvas.on('object:scaling', function(e) {
+            e.target.isMoving = true;
+            updateLayersPanel();
             if (e.target.isFrame) {
                 syncFrameClips(e.target);
                 updateSafeAreaPosition(e.target);
             }
+        });
+
+        canvas.on('object:rotating', function(e) {
+            e.target.isMoving = true;
+            updateLayersPanel();
         });
 
         // Resize handling
@@ -1245,6 +1284,11 @@
         });
 
         canvas.on('mouse:up', function(opt) {
+            const active = canvas.getActiveObject();
+            if (active) {
+                active.isMoving = false;
+                updateLayersPanel();
+            }
             this.setViewportTransform(this.viewportTransform);
             this.isDragging = false;
             this.selection = true;
@@ -1278,14 +1322,14 @@
         function addText(initialText = "Nagłówek") {
             const id = uuidv4();
             const textObj = new fabric.Textbox(initialText, {
-                left: 100 - canvas.viewportTransform[4], // Adjust for pan
+                id: id, // Standardized to 'id'
+                left: 100 - canvas.viewportTransform[4],
                 top: 100 - canvas.viewportTransform[5],
                 width: 300,
                 fontSize: 40,
                 fontFamily: 'Arial',
                 fill: '#000000',
-                textAlign: 'center',
-                textId: id // Custom property to link with JSON
+                textAlign: 'center'
             });
 
             // Add to translation state
@@ -1428,6 +1472,7 @@
             reader.onload = function(e) {
                 fabric.Image.fromURL(e.target.result, function(img) {
                     img.set({
+                        id: uuidv4(),
                         left: 200,
                         top: 200,
                         scaleX: 0.5,
@@ -1453,10 +1498,20 @@
         });
 
         window.addEventListener('dragenter', (e) => {
-            dropOverlay.style.display = 'flex';
+            if (e.dataTransfer.types.includes('Files')) {
+                dropOverlay.style.display = 'flex';
+            }
         });
-        
+
+        window.addEventListener('dragover', (e) => {
+            if (e.dataTransfer.types.includes('Files')) {
+                e.preventDefault();
+                dropOverlay.style.display = 'flex'; // Ensure it stays visible during hover
+            }
+        });
+
         dropOverlay.addEventListener('dragleave', (e) => {
+            e.preventDefault();
             // Only hide if we actually leave the overlay
             if (e.relatedTarget === null || !dropOverlay.contains(e.relatedTarget)) {
                 dropOverlay.style.display = 'none';
@@ -1466,37 +1521,46 @@
         dropOverlay.addEventListener('drop', (e) => {
             dropOverlay.style.display = 'none';
             
-            const files = e.dataTransfer.files;
+            const files = Array.from(e.dataTransfer.files);
             if (files.length > 0) {
-                const file = files[0];
-                if (file.type.startsWith('image/')) {
-                    const reader = new FileReader();
-                    reader.onload = function(f) {
-                        fabric.Image.fromURL(f.target.result, function(img) {
-                            // Calculate world coordinates from screen coordinates
-                            const vpt = canvas.viewportTransform;
-                            const zoom = canvas.getZoom();
-                            
-                            const worldX = (e.clientX - vpt[4]) / zoom;
-                            const worldY = (e.clientY - vpt[5]) / zoom;
+                // Calculate world coordinates from screen coordinates
+                const vpt = canvas.viewportTransform;
+                const zoom = canvas.getZoom();
+                const worldX = (e.clientX - vpt[4]) / zoom;
+                const worldY = (e.clientY - vpt[5]) / zoom;
 
-                            img.set({
-                                left: worldX,
-                                top: worldY,
-                                originX: 'center',
-                                originY: 'center',
-                                scaleX: 0.5 / zoom,
-                                scaleY: 0.5 / zoom
+                files.forEach((file, index) => {
+                    if (file.type.startsWith('image/')) {
+                        const reader = new FileReader();
+                        reader.onload = function(f) {
+                            fabric.Image.fromURL(f.target.result, function(img) {
+                                // Add a cascading offset for multiple files
+                                const offset = index * 20;
+
+                                img.set({
+                                    id: uuidv4(), // Generate unique ID for EACH image
+                                    left: worldX + (offset / zoom),
+                                    top: worldY + (offset / zoom),
+                                    originX: 'center',
+                                    originY: 'center',
+                                    scaleX: 0.5 / zoom,
+                                    scaleY: 0.5 / zoom
+                                });
+                                canvas.add(img);
+                                if (index === files.length - 1) {
+                                    canvas.setActiveObject(img);
+                                }
+                                checkForClipping(img);
+                                if (index === files.length - 1) {
+                                    saveHistory();
+                                    saveLocalState();
+                                    updateLayersPanel();
+                                }
                             });
-                            canvas.add(img);
-                            canvas.setActiveObject(img);
-                            checkForClipping(img);
-                            saveHistory();
-                            saveLocalState();
-                        });
-                    };
-                    reader.readAsDataURL(file);
-                }
+                        };
+                        reader.readAsDataURL(file);
+                    }
+                });
             }
         });
 
@@ -1900,6 +1964,7 @@
 
         // Initial call
         updateJSONEditor();
+        setTimeout(updateLayersPanel, 500);
 
         // --- 9. LAYERS PANEL LOGIC ---
         state.folders = []; // Store folder metadata {id, name, collapsed}
@@ -1925,39 +1990,38 @@
             const layersList = document.getElementById('layers-list');
             if (!layersList) return;
 
-            // 1. Get all objects and map them to their folders
             const allObjects = canvas.getObjects().filter(obj => 
                 !obj.excludeFromExport && !obj.isSafeArea && !(obj.linkedFrameId && !obj.isFrame)
             );
             
-            // Fabric index 0 is BOTTOM. We want TOP objects at the top of our list.
-            // So we reverse for the UI.
             const objects = allObjects.slice().reverse();
             const activeObject = canvas.getActiveObject();
             
             layersList.innerHTML = '';
 
-            // Helper to render an item
             const renderItem = (obj, isNested = false) => {
                 const item = document.createElement('div');
-                item.className = `layer-item ${activeObject === obj ? 'active' : ''} ${isNested ? 'nested' : ''}`;
+                // Added 'moving' class if the object is currently being transformed
+                const isMoving = obj === activeObject && (obj.isMoving || obj.isScaling || obj.isRotating);
+                item.className = `layer-item ${activeObject === obj ? 'active' : ''} ${isMoving ? 'moving' : ''} ${isNested ? 'nested' : ''}`;
                 item.draggable = true;
-                item.dataset.id = obj.id || obj.textId || 'temp';
+                item.dataset.id = obj.id;
                 
                 let icon = 'fa-shapes';
-                let name = 'Element';
                 let type = obj.type;
+                
+                let name = obj.customName || 'Element';
 
                 if (obj.isFrame) {
                     icon = 'fa-mobile-screen';
-                    name = obj.deviceName || 'Ekran';
+                    if (!obj.customName) name = obj.deviceName || 'Ekran';
                     type = 'Frame';
                 } else if (obj.type === 'textbox' || obj.type === 'text' || obj.type === 'i-text') {
                     icon = 'fa-font';
-                    name = obj.text ? (obj.text.substring(0, 15) + (obj.text.length > 15 ? '...' : '')) : 'Tekst';
+                    if (!obj.customName) name = obj.text ? (obj.text.substring(0, 15) + (obj.text.length > 15 ? '...' : '')) : 'Tekst';
                 } else if (obj.type === 'image') {
                     icon = 'fa-image';
-                    name = 'Obraz';
+                    if (!obj.customName) name = 'Obraz';
                 }
 
                 item.innerHTML = `
@@ -1967,17 +2031,40 @@
                         <div class="layer-type">${type}</div>
                     </div>
                     <div class="layer-actions">
-                        <button class="layer-action-btn ${!obj.visible ? 'hidden' : ''}" title="Widoczność">
+                        <button class="layer-action-btn rename-btn" title="Zmień nazwę">
+                            <i class="fa-solid fa-pencil" style="font-size: 0.7rem;"></i>
+                        </button>
+                        <button class="layer-action-btn vis-btn ${!obj.visible ? 'hidden' : ''}" title="Widoczność">
                             <i class="fa-solid ${obj.visible ? 'fa-eye' : 'fa-eye-slash'}"></i>
                         </button>
                     </div>
                 `;
 
-                // Drag Events
+                // Scroll active item into view if it was just selected or moved
+                if (activeObject === obj && !isNested) {
+                    setTimeout(() => {
+                        item.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                    }, 10);
+                }
+
+                // Rename action
+                const renameBtn = item.querySelector('.rename-btn');
+                renameBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    const nameEl = item.querySelector('.layer-name');
+                    startRenaming(nameEl, (newName) => {
+                        obj.customName = newName;
+                        updateLayersPanel();
+                        saveLocalState();
+                    });
+                };
+
+                // Drag Events for Layer Reordering and Folder Assignment
                 item.ondragstart = (e) => {
-                    draggedLayerId = obj.id || obj.textId;
+                    draggedLayerId = obj.id;
                     item.classList.add('dragging');
                     e.dataTransfer.setData('text/plain', draggedLayerId);
+                    e.dataTransfer.effectAllowed = 'move';
                 };
                 item.ondragend = () => {
                     item.classList.remove('dragging');
@@ -1985,29 +2072,44 @@
                 };
                 item.ondragover = (e) => {
                     e.preventDefault();
+                    e.dataTransfer.dropEffect = 'move';
                     item.classList.add('drag-over');
                 };
                 item.ondragleave = () => item.classList.remove('drag-over');
                 item.ondrop = (e) => {
                     e.preventDefault();
-                    handleLayerDrop(draggedLayerId, obj);
+                    item.classList.remove('drag-over');
+                    handleLayerDrop(draggedLayerId, obj, e);
                 };
 
-                // Actions
-                const visBtn = item.querySelector('.layer-action-btn');
+                // Visibility toggle click
+                const visBtn = item.querySelector('.vis-btn');
                 visBtn.onclick = (e) => { e.stopPropagation(); toggleLayerVisibility(obj); };
-                item.onclick = () => { canvas.setActiveObject(obj); canvas.renderAll(); updateLayersPanel(); };
+                // Selection click
+                item.onclick = () => {
+                    // Isolation Mode: Disable evented for all other objects
+                    // so the user can click and drag THIS object even if obscured.
+                    canvas.getObjects().forEach(other => {
+                        if (other !== obj && !other.excludeFromExport) {
+                            other.evented = false;
+                        } else {
+                            other.evented = true;
+                        }
+                    });
+                    
+                    canvas.isLayerIsolated = true;
+                    canvas.setActiveObject(obj);
+                    canvas.renderAll();
+                    updateLayersPanel();
+                };
 
                 return item;
             };
 
-            // Render Hierarchy
-            // First, render objects without folders (or folders themselves)
-            // For this prototype, we'll keep it simple: Folders are top-level, objects can be in folders.
-            
             state.folders.forEach(folder => {
                 const fItem = document.createElement('div');
                 fItem.className = 'layer-item folder';
+                fItem.draggable = true; // Folders can also be reordered
                 fItem.innerHTML = `
                     <div class="folder-toggle" onclick="toggleFolder('${folder.id}', event)">
                         <i class="fa-solid ${folder.collapsed ? 'fa-caret-right' : 'fa-caret-down'}"></i>
@@ -2017,15 +2119,46 @@
                         <div class="layer-name">${folder.name}</div>
                     </div>
                     <div class="layer-actions">
+                        <button class="layer-action-btn rename-btn" title="Zmień nazwę"><i class="fa-solid fa-pencil" style="font-size: 0.7rem;"></i></button>
                         <button class="layer-action-btn" onclick="deleteFolder('${folder.id}', event)"><i class="fa-solid fa-trash"></i></button>
                     </div>
                 `;
                 
-                fItem.ondragover = (e) => { e.preventDefault(); fItem.classList.add('drag-over'); };
+                // Rename Folder action
+                const renameBtn = fItem.querySelector('.rename-btn');
+                renameBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    const nameEl = fItem.querySelector('.layer-name');
+                    startRenaming(nameEl, (newName) => {
+                        folder.name = newName;
+                        updateLayersPanel();
+                        saveLocalState();
+                    });
+                };
+
+                // Folder Drag Events (as a drop target for grouping and a source for folder reordering)
+                fItem.ondragstart = (e) => {
+                    draggedLayerId = folder.id;
+                    fItem.classList.add('dragging');
+                    e.dataTransfer.setData('text/plain', folder.id);
+                };
+                fItem.ondragend = () => fItem.classList.remove('dragging');
+                
+                fItem.ondragover = (e) => { 
+                    e.preventDefault(); 
+                    fItem.classList.add('drag-over'); 
+                };
                 fItem.ondragleave = () => fItem.classList.remove('drag-over');
                 fItem.ondrop = (e) => {
                     e.preventDefault();
-                    assignToFolder(draggedLayerId, folder.id);
+                    fItem.classList.remove('drag-over');
+                    
+                    if (draggedLayerId && draggedLayerId.startsWith('folder_')) {
+                        // Reorder folders if needed (future expansion)
+                    } else {
+                        // Assign item to this folder
+                        assignToFolder(draggedLayerId, folder.id);
+                    }
                 };
 
                 layersList.appendChild(fItem);
@@ -2037,7 +2170,6 @@
                 }
             });
 
-            // Render objects not in any folder
             objects.filter(o => !o.folderId).forEach(obj => {
                 layersList.appendChild(renderItem(obj));
             });
@@ -2045,6 +2177,42 @@
             if (objects.length === 0 && state.folders.length === 0) {
                 layersList.innerHTML = '<div style="padding: 20px; text-align: center; color: #94a3b8; font-size: 0.8rem;">Brak warstw</div>';
             }
+        }
+
+        function startRenaming(el, onComplete) {
+            const currentName = el.textContent;
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'layer-name-input';
+            input.value = currentName;
+            
+            // Prevent input interactions from triggering parent layer drag/click
+            input.addEventListener('click', (e) => e.stopPropagation());
+            input.addEventListener('mousedown', (e) => e.stopPropagation());
+            
+            el.innerHTML = '';
+            el.appendChild(input);
+            input.focus();
+            input.select();
+
+            const finish = () => {
+                if (!input.parentNode) return; // Already finished
+                const newName = input.value.trim() || currentName;
+                onComplete(newName);
+            };
+
+            input.addEventListener('blur', finish);
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    finish();
+                }
+                if (e.key === 'Escape') {
+                    e.preventDefault();
+                    input.removeEventListener('blur', finish); // Cancel finish
+                    el.textContent = currentName;
+                }
+            });
         }
 
         function toggleFolder(id, event) {
@@ -2069,8 +2237,28 @@
             saveLocalState();
         }
 
+        function handleRootDrop(e) {
+            // Only trigger if dropped directly on the list container, not its children
+            if (e.target.id !== 'layers-list') return;
+            
+            e.preventDefault();
+            const objects = canvas.getObjects();
+            const draggedObj = objects.find(o => o.id === draggedLayerId);
+            
+            if (draggedObj) {
+                // Move to top of canvas (highest index) and remove from folder
+                draggedObj.moveTo(objects.length - 1);
+                delete draggedObj.folderId;
+                
+                canvas.renderAll();
+                updateLayersPanel();
+                saveHistory();
+                saveLocalState();
+            }
+        }
+
         function assignToFolder(objId, folderId) {
-            const obj = canvas.getObjects().find(o => (o.id || o.textId) === objId);
+            const obj = canvas.getObjects().find(o => o.id === objId);
             if (obj) {
                 obj.folderId = folderId;
                 updateLayersPanel();
@@ -2078,20 +2266,30 @@
             }
         }
 
-        function handleLayerDrop(draggedId, targetObj) {
-            const objects = canvas.getObjects();
-            const draggedObj = objects.find(o => (o.id || o.textId) === draggedId);
+        function handleLayerDrop(draggedId, targetObj, event) {
+            const allObjects = canvas.getObjects();
+            const draggedObj = allObjects.find(o => o.id === draggedId);
             
             if (!draggedObj || draggedObj === targetObj) return;
 
-            // Reordering logic
-            // Fabric.js: 0 is bottom.
-            // UI: top of list is top of canvas.
+            // Fabric.js: higher index = on top
+            // Our UI: top of list = higher index (on top)
             
-            const targetIndex = canvas.getObjects().indexOf(targetObj);
+            const targetIndex = allObjects.indexOf(targetObj);
             
-            // Move object to new index
-            draggedObj.moveTo(targetIndex);
+            // Check if we dropped on the top or bottom half of the target item
+            const rect = event.currentTarget.getBoundingClientRect();
+            const midpoint = rect.top + rect.height / 2;
+            const isTopHalf = event.clientY < midpoint;
+
+            // If we drop on top half, we want it to be ABOVE the target (higher index)
+            // If we drop on bottom half, we want it to be BELOW the target (lower index)
+            let newIndex = isTopHalf ? targetIndex + 1 : targetIndex;
+
+            // If the dragged object was originally BELOW the target and we move it ABOVE, 
+            // the indices shift. Fabric's moveTo handles the absolute position in the array.
+            
+            draggedObj.moveTo(newIndex);
             
             // Also inherit folder if target is in folder
             draggedObj.folderId = targetObj.folderId;
