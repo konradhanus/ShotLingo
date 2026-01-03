@@ -9,6 +9,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/localforage/1.10.0/localforage.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     
     <style>
@@ -262,6 +263,35 @@
             font-weight: bold;
             pointer-events: none;
         }
+
+        /* Minimap */
+        #minimap-container {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            width: 240px;
+            height: 160px;
+            background: rgba(255, 255, 255, 0.9);
+            border: 1px solid #cbd5e1;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+            z-index: 100;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        #minimap {
+            background: #f8fafc;
+            cursor: grab;
+            width: 100%;
+            height: 100%;
+        }
+        
+        #minimap:active {
+            cursor: grabbing;
+        }
     </style>
 </head>
 <body>
@@ -404,8 +434,18 @@
             </div>
         </div>
         
+        <!-- Minimap -->
+        <div id="minimap-container" class="pointer-events-auto">
+            <canvas id="minimap"></canvas>
+        </div>
+
         <!-- Toast Notification -->
         <div id="toast" class="toast">Action completed</div>
+
+        <!-- Minimap -->
+        <div id="minimap-container" class="pointer-events-auto">
+            <canvas id="minimap"></canvas>
+        </div>
 
     </div>
 
@@ -591,9 +631,10 @@
 
             // 2. Handle Frames (need new labels)
             if (obj.isFrame && obj.deviceName) {
-                // The cloned object might have a reference to the OLD label in 'frameLabel' prop (shallow copy of reference)
-                // We need to create a NEW label for this new frame.
-                
+                // Generate new ID for the pasted frame
+                const newFrameId = uuidv4();
+                obj.id = newFrameId;
+
                 const newLabel = new fabric.Text(obj.deviceName, {
                     left: obj.left,
                     top: obj.top - 50,
@@ -601,7 +642,8 @@
                     fill: '#64748b',
                     selectable: false,
                     evented: false,
-                    excludeFromExport: true
+                    excludeFromExport: true,
+                    linkedFrameId: newFrameId // Link to new frame ID
                 });
                 
                 obj.frameLabel = newLabel;
@@ -611,66 +653,72 @@
         }
 
         // Listen for canvas changes
-        canvas.on('object:added', () => { saveHistory(); saveLocalState(); });
-        canvas.on('object:modified', () => { saveHistory(); saveLocalState(); });
-        canvas.on('object:removed', () => { saveHistory(); saveLocalState(); });
+        canvas.on('object:added', () => { saveHistory(); debouncedSave(); });
+        canvas.on('object:modified', () => { saveHistory(); debouncedSave(); });
+        canvas.on('object:removed', () => { saveHistory(); debouncedSave(); });
 
-        // --- LOCAL STORAGE PERSISTENCE ---
-        const LOCAL_STORAGE_KEY = 'shotlingo_v1';
+        // --- LOCAL STORAGE PERSISTENCE (UPGRADED TO INDEXEDDB) ---
+        const LOCAL_STORAGE_KEY = 'shotlingo_v1_db';
+        let saveTimeout = null;
 
-        function saveLocalState() {
+        function debouncedSave() {
+            if (saveTimeout) clearTimeout(saveTimeout);
+            saveTimeout = setTimeout(saveLocalState, 1000); // Wait for 1s of inactivity
+        }
+
+        async function saveLocalState() {
             if (state.isProcessingHistory) return;
 
             const dataToSave = {
-                version: '1.0',
+                version: '1.1',
                 currentLang: state.currentLang,
                 translations: state.translations,
-                canvas: canvas.toJSON(['textId', 'isFrame', 'deviceName', 'isSafeArea', 'frameLabel'])
+                canvas: canvas.toJSON(['id', 'textId', 'isFrame', 'deviceName', 'isSafeArea', 'linkedFrameId', 'frameLabel'])
             };
 
             try {
-                localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(dataToSave));
-                // Optional: console.log('Saved to local storage');
+                // Using localforage for IndexedDB support (unlimited storage compared to 5MB localStorage)
+                await localforage.setItem(LOCAL_STORAGE_KEY, dataToSave);
+                // Optional: showToast("Autozapis...");
             } catch (e) {
-                console.error('Failed to save to localStorage', e);
-                showToast('Błąd zapisu lokalnego (brak miejsca?)');
+                console.error('Failed to save to IndexedDB', e);
+                showToast('Błąd autozapisu!');
             }
         }
 
-        function loadLocalState() {
-            const savedData = localStorage.getItem(LOCAL_STORAGE_KEY);
-            if (!savedData) {
-                saveHistory(); // Initialize history if no save found
-                return;
-            }
-
+        async function loadLocalState() {
             try {
-                const parsed = JSON.parse(savedData);
+                const savedData = await localforage.getItem(LOCAL_STORAGE_KEY);
+                if (!savedData) {
+                    saveHistory(); // Initialize history
+                    return;
+                }
                 
                 // Restore State
-                state.currentLang = parsed.currentLang || 'en-US';
-                state.translations = parsed.translations || state.translations;
+                state.currentLang = savedData.currentLang || 'en-US';
+                state.translations = savedData.translations || state.translations;
                 
                 // Update UI for state
                 document.getElementById('lang-switcher').value = state.currentLang;
                 updateJSONEditor();
 
                 // Restore Canvas
-                if (parsed.canvas) {
-                    state.isProcessingHistory = true; // Prevent history/save loops during load
-                    canvas.loadFromJSON(parsed.canvas, function() {
-                        // Restore frame-label links after loading
+                if (savedData.canvas) {
+                    state.isProcessingHistory = true;
+                    canvas.loadFromJSON(savedData.canvas, function() {
                         const objects = canvas.getObjects();
-                        objects.forEach(obj => {
-                            if (obj.isFrame && obj.deviceName) {
-                                // Find the corresponding label
-                                obj.frameLabel = objects.find(o => !o.selectable && o.text === obj.deviceName && o.top < obj.top);
-                            }
+                        // Restore frame-label links using IDs
+                        const frames = objects.filter(o => o.isFrame);
+                        const labels = objects.filter(o => o.linkedFrameId);
+
+                        labels.forEach(label => {
+                            const frame = frames.find(f => f.id === label.linkedFrameId);
+                            if (frame) frame.frameLabel = label;
                         });
                         
                         canvas.renderAll();
                         state.isProcessingHistory = false;
-                        saveHistory(); // Save this as the first undo step
+                        saveHistory();
                         showToast("Przywrócono sesję");
                     });
                 }
