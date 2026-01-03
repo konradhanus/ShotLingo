@@ -488,6 +488,14 @@
 
                 <div style="height: 24px; width: 1px; background: #e2e8f0; margin: 0 5px;"></div>
 
+                <button class="btn" onclick="exportProjectAsJSON()" title="Zapisz projekt do pliku">
+                    <i class="fa-solid fa-save"></i>
+                </button>
+                <button class="btn" onclick="triggerLoadProject()" title="Wczytaj projekt z pliku">
+                    <i class="fa-solid fa-folder-open"></i>
+                </button>
+                <input type="file" id="project-upload" hidden accept=".json,.timoai" onchange="loadProjectFromJSON(event)">
+
                 <button class="btn primary" onclick="exportScreenshots()">
                     <i class="fa-solid fa-download"></i> Eksportuj
                 </button>
@@ -2051,7 +2059,100 @@
             saveLocalState();
         }
 
-        // --- 7. LOGIC: TRANSLATION SYSTEM ---
+        // --- 7. PROJECT SAVE/LOAD ---
+        function exportProjectAsJSON() {
+            // Use the same logic as saveLocalState to gather all data
+            const projectData = {
+                version: '1.3',
+                currentLang: state.currentLang,
+                translations: state.translations,
+                folders: state.folders,
+                viewport: {
+                    zoom: canvas.getZoom(),
+                    transform: canvas.viewportTransform
+                },
+                canvas: canvas.toJSON(['id', 'isFrame', 'deviceName', 'isSafeArea', 'linkedFrameId', 'clippedByFrameId', 'folderId', 'customName', 'borderRadius', 'uniformScaling', 'locked'])
+            };
+            
+            const blob = new Blob([JSON.stringify(projectData, null, 2)], {type: "application/json;charset=utf-8"});
+            saveAs(blob, `TimoAI_Project_${new Date().toISOString().split('T')[0]}.timoai`);
+            showToast("Projekt zapisany!");
+        }
+
+        function triggerLoadProject() {
+            if (!confirm("Wczytanie nowego projektu nadpisze Twoją bieżącą pracę. Kontynuować?")) return;
+            document.getElementById('project-upload').click();
+        }
+
+        function loadProjectFromJSON(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const projectData = JSON.parse(e.target.result);
+
+                    // Use the same logic as loadLocalState to apply data
+                    state.currentLang = projectData.currentLang || 'en-US';
+                    state.translations = projectData.translations || {};
+                    state.folders = projectData.folders || [];
+                    
+                    // Clear canvas before loading
+                    canvas.clear();
+
+                    if (projectData.canvas) {
+                        state.isProcessingHistory = true;
+                        canvas.loadFromJSON(projectData.canvas, function() {
+                            if (projectData.viewport) {
+                                canvas.setZoom(projectData.viewport.zoom || 1);
+                                canvas.viewportTransform = projectData.viewport.transform || [1, 0, 0, 1, 0, 0];
+                            }
+
+                            const objects = canvas.getObjects();
+                            // ... (Healing logic can be copied from loadLocalState)
+                            objects.forEach(obj => {
+                                if (!obj.id) obj.id = uuidv4();
+                                if (obj.locked) {
+                                    obj.selectable = false;
+                                    obj.evented = false;
+                                }
+                            });
+                            
+                            // Restore frame-label links
+                            const frames = objects.filter(o => o.isFrame);
+                            const linkedObjects = objects.filter(o => o.linkedFrameId);
+
+                            linkedObjects.forEach(obj => {
+                                const frame = frames.find(f => f.id === obj.linkedFrameId);
+                                if (frame) {
+                                    if (obj.isSafeArea) frame.safeArea = obj;
+                                    else frame.frameLabel = obj;
+                                }
+                            });
+                            
+                            canvas.renderAll();
+                            state.isProcessingHistory = false;
+                            saveHistory(); // Start new history
+                            showToast("Projekt wczytany pomyślnie");
+
+                            // Refresh all UI
+                            updateLangSwitcher();
+                            updateLayersPanel();
+                            updateJSONEditor();
+                        });
+                    }
+                } catch (err) {
+                    alert("Błąd wczytywania pliku projektu: " + err.message);
+                } finally {
+                    // Reset file input to allow loading the same file again
+                    event.target.value = '';
+                }
+            };
+            reader.readAsText(file);
+        }
+
+        // --- 8. TRANSLATION SYSTEM ---
 
         // Listener for text editing on canvas
         canvas.on('text:changed', function(e) {
