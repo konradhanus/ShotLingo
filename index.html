@@ -1680,9 +1680,12 @@
              const rect = minimapContainer.getBoundingClientRect();
              minimapCanvas.width = rect.width;
              minimapCanvas.height = rect.height;
+             requestAnimationFrame(updateMinimap);
         }
         window.addEventListener('resize', resizeMinimap);
-        resizeMinimap();
+        
+        // Initial resize delay to ensure DOM is ready
+        setTimeout(resizeMinimap, 100);
 
         function updateMinimap() {
             if (!minimapCtx) return;
@@ -1690,64 +1693,59 @@
             const width = minimapCanvas.width;
             const height = minimapCanvas.height;
 
-            // Clear
+            // Clear and set background
             minimapCtx.clearRect(0, 0, width, height);
-            minimapCtx.fillStyle = '#f8fafc'; // Background
+            minimapCtx.fillStyle = '#f8fafc';
             minimapCtx.fillRect(0,0, width, height);
 
-            const objects = canvas.getObjects().filter(o => !o.excludeFromExport && !o.isSafeArea); // Filter clutter
+            const objects = canvas.getObjects().filter(o => !o.excludeFromExport && !o.isSafeArea);
             
             // Calculate World Bounds
-            // Default to current viewport if empty
-            let minX = 0, minY = 0, maxX = canvas.width, maxY = canvas.height;
+            let minX = -2000, minY = -2000, maxX = 2000, maxY = 2000;
             
             if (objects.length > 0) {
-                minX = Infinity; minY = Infinity; maxX = -Infinity; maxY = -Infinity;
+                let objMinX = Infinity, objMinY = Infinity, objMaxX = -Infinity, objMaxY = -Infinity;
                 objects.forEach(obj => {
                     const coords = obj.getCoords();
                     coords.forEach(p => {
-                        if (p.x < minX) minX = p.x;
-                        if (p.y < minY) minY = p.y;
-                        if (p.x > maxX) maxX = p.x;
-                        if (p.y > maxY) maxY = p.y;
+                        if (p.x < objMinX) objMinX = p.x;
+                        if (p.y < objMinY) objMinY = p.y;
+                        if (p.x > objMaxX) objMaxX = p.x;
+                        if (p.y > objMaxY) objMaxY = p.y;
                     });
                 });
-                // Add padding
-                const padding = 1000; 
-                minX -= padding;
-                minY -= padding;
-                maxX += padding;
-                maxY += padding;
+                
+                // Add padding for better context
+                const padding = 1500; 
+                minX = objMinX - padding;
+                minY = objMinY - padding;
+                maxX = objMaxX + padding;
+                maxY = objMaxY + padding;
             }
 
             const worldWidth = maxX - minX;
             const worldHeight = maxY - minY;
 
-            // Calculate Scale to fit world in minimap
-            // Maintain aspect ratio
+            // Maintain aspect ratio while fitting world in minimap
             const scaleX = width / worldWidth;
             const scaleY = height / worldHeight;
             const minimapScale = Math.min(scaleX, scaleY);
             
-            // Centering offsets
             const renderWidth = worldWidth * minimapScale;
             const renderHeight = worldHeight * minimapScale;
             const offsetX = (width - renderWidth) / 2;
             const offsetY = (height - renderHeight) / 2;
 
-            // Save transform data
+            // Persist transform data for interaction logic
             minimapCanvas.dataset.scale = minimapScale;
             minimapCanvas.dataset.minX = minX;
             minimapCanvas.dataset.minY = minY;
             minimapCanvas.dataset.offsetX = offsetX;
             minimapCanvas.dataset.offsetY = offsetY;
 
-            // Draw Objects
-            minimapCtx.fillStyle = '#cbd5e1';
+            // Render elements on minimap
             objects.forEach(obj => {
-                // Approximate rect
                 const br = obj.getBoundingRect();
-                
                 const x = offsetX + (br.left - minX) * minimapScale;
                 const y = offsetY + (br.top - minY) * minimapScale;
                 const w = br.width * minimapScale;
@@ -1757,11 +1755,10 @@
                 minimapCtx.fillRect(x, y, w, h);
             });
             
-            // Draw Viewport Rect
+            // Render Viewport Indicator
             const vpt = canvas.viewportTransform;
             const zoom = canvas.getZoom();
             
-            // Visible area in world coords
             const viewX = -vpt[4] / zoom;
             const viewY = -vpt[5] / zoom;
             const viewW = canvas.width / zoom;
@@ -1772,22 +1769,26 @@
             const mapVw = viewW * minimapScale;
             const mapVh = viewH * minimapScale;
             
+            // Viewport stroke
             minimapCtx.strokeStyle = '#3b82f6';
             minimapCtx.lineWidth = 2;
             minimapCtx.strokeRect(mapVx, mapVy, mapVw, mapVh);
             
-            // Semi-transparent overlay for outside viewport area
-            minimapCtx.fillStyle = 'rgba(0,0,0,0.1)';
-            minimapCtx.beginPath();
-            minimapCtx.rect(0, 0, width, height);
-            // Cut out the viewport
-            minimapCtx.rect(mapVx, mapVy, mapVw, mapVh);
-            minimapCtx.fill('evenodd');
+            // "Fog of War" overlay for areas outside viewport
+            minimapCtx.fillStyle = 'rgba(0,0,0,0.05)';
+            // Top
+            minimapCtx.fillRect(0, 0, width, Math.max(0, mapVy));
+            // Bottom
+            minimapCtx.fillRect(0, mapVy + mapVh, width, Math.max(0, height - (mapVy + mapVh)));
+            // Left
+            minimapCtx.fillRect(0, Math.max(0, mapVy), Math.max(0, mapVx), mapVh);
+            // Right
+            minimapCtx.fillRect(mapVx + mapVw, Math.max(0, width - (mapVx + mapVw)), mapVh);
         }
         
         canvas.on('after:render', updateMinimap);
         
-        // Minimap Interaction
+        // Minimap Interaction Handlers
         let isNavigatingMinimap = false;
         
         function moveViewportTo(mx, my) {
@@ -1799,19 +1800,13 @@
             
             if (!scale) return;
 
-            // Target World Center
             const worldX = ((mx - offsetX) / scale) + minX;
             const worldY = ((my - offsetY) / scale) + minY;
-            
             const zoom = canvas.getZoom();
             
-            // We want (worldX, worldY) to be at center of canvas
-            // vpt[4] = canvas.width/2 - worldX * zoom
-            const newVptX = (canvas.width / 2) - (worldX * zoom);
-            const newVptY = (canvas.height / 2) - (worldY * zoom);
-            
-            canvas.viewportTransform[4] = newVptX;
-            canvas.viewportTransform[5] = newVptY;
+            // Position world target in screen center
+            canvas.viewportTransform[4] = (canvas.width / 2) - (worldX * zoom);
+            canvas.viewportTransform[5] = (canvas.height / 2) - (worldY * zoom);
             
             canvas.requestRenderAll();
         }
