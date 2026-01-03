@@ -492,7 +492,8 @@
             // Limit stack size to 50 for performance
             if (state.undoStack.length > 50) state.undoStack.shift();
             
-            state.undoStack.push(JSON.stringify(canvas.toJSON(['textId', 'isFrame', 'deviceName', 'isSafeArea', 'frameLabel'])));
+            // Don't serialize 'frameLabel' (runtime ref), use IDs instead
+            state.undoStack.push(JSON.stringify(canvas.toJSON(['id', 'textId', 'isFrame', 'deviceName', 'isSafeArea', 'linkedFrameId'])));
             state.redoStack = []; // Clear redo on new action
         }
 
@@ -506,12 +507,27 @@
             const prevState = state.undoStack[state.undoStack.length - 1];
             
             canvas.loadFromJSON(prevState, function() {
-                // Restore frame-label links after loading
                 const objects = canvas.getObjects();
-                objects.forEach(obj => {
-                    if (obj.isFrame && obj.deviceName) {
-                        // Find the corresponding label (it's not linked in JSON)
-                        obj.frameLabel = objects.find(o => !o.selectable && o.text === obj.deviceName && o.top < obj.top);
+                
+                // Restore frame-label links
+                const frames = objects.filter(o => o.isFrame);
+                const labels = objects.filter(o => o.linkedFrameId);
+
+                // 1. Try ID based linking (New robust way)
+                labels.forEach(label => {
+                    const frame = frames.find(f => f.id === label.linkedFrameId);
+                    if (frame) frame.frameLabel = label;
+                });
+
+                // 2. Fallback heuristic (Old way, for pre-ID states in stack)
+                frames.forEach(frame => {
+                    if (!frame.frameLabel && frame.deviceName) {
+                        frame.frameLabel = objects.find(o => 
+                            !o.selectable && 
+                            o.text === frame.deviceName && 
+                            o.top < frame.top && 
+                            Math.abs(o.left - frame.left) < 5 // Check alignment too
+                        );
                     }
                 });
                 
@@ -656,14 +672,22 @@
         canvas.on('object:added', () => { saveHistory(); debouncedSave(); });
         canvas.on('object:modified', () => { saveHistory(); debouncedSave(); });
         canvas.on('object:removed', () => { saveHistory(); debouncedSave(); });
+        canvas.on('text:changed', () => { saveHistory(); debouncedSave(); }); // Ensure text changes trigger save
 
         // --- LOCAL STORAGE PERSISTENCE (UPGRADED TO INDEXEDDB) ---
         const LOCAL_STORAGE_KEY = 'shotlingo_v1_db';
         let saveTimeout = null;
 
         function debouncedSave() {
+            // Show "Saving..." status immediately
+            const t = document.getElementById('toast');
+            if (t.textContent !== "Zapisywanie...") {
+                t.textContent = "Zapisywanie...";
+                t.classList.add('show');
+            }
+
             if (saveTimeout) clearTimeout(saveTimeout);
-            saveTimeout = setTimeout(saveLocalState, 1000); // Wait for 1s of inactivity
+            saveTimeout = setTimeout(saveLocalState, 500); // Reduced to 500ms
         }
 
         async function saveLocalState() {
@@ -677,9 +701,12 @@
             };
 
             try {
-                // Using localforage for IndexedDB support (unlimited storage compared to 5MB localStorage)
                 await localforage.setItem(LOCAL_STORAGE_KEY, dataToSave);
-                // Optional: showToast("Autozapis...");
+                
+                // Show "Saved" confirmation
+                const t = document.getElementById('toast');
+                t.textContent = "Zapisano";
+                setTimeout(() => t.classList.remove('show'), 1000);
             } catch (e) {
                 console.error('Failed to save to IndexedDB', e);
                 showToast('Błąd autozapisu!');
