@@ -1,0 +1,954 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>ShotLingo - App Store Screenshot Builder</title>
+    
+    <!-- External Libraries -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <style>
+        :root {
+            --primary-color: #3b82f6;
+            --bg-dark: #1e293b;
+            --bg-panel: rgba(255, 255, 255, 0.95);
+            --text-main: #334155;
+            --border-radius: 12px;
+            --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        }
+
+        * { box-sizing: border-box; outline: none; -webkit-tap-highlight-color: transparent; }
+        
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background-color: #f1f5f9;
+        }
+
+        #canvas-container {
+            width: 100%;
+            height: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+
+        /* UI Overlay */
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 10;
+            pointer-events: none; /* Allow clicks to pass through to canvas */
+        }
+
+        .pointer-events-auto {
+            pointer-events: auto;
+        }
+
+        /* Top Bar */
+        .top-bar {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 60px;
+            background: var(--bg-panel);
+            backdrop-filter: blur(10px);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 20px;
+            box-shadow: var(--shadow);
+            z-index: 100;
+        }
+
+        .logo { font-weight: bold; font-size: 1.2rem; color: var(--primary-color); display: flex; align-items: center; gap: 10px; }
+        
+        .actions { display: flex; gap: 10px; align-items: center; }
+
+        .btn {
+            background: white;
+            border: 1px solid #cbd5e1;
+            padding: 8px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            transition: all 0.2s;
+            color: var(--text-main);
+        }
+        
+        .btn:hover { background: #f8fafc; border-color: var(--primary-color); }
+        .btn.primary { background: var(--primary-color); color: white; border-color: var(--primary-color); }
+        .btn.primary:hover { background: #2563eb; }
+
+        /* Floating Toolbar (Left) */
+        .toolbar {
+            position: absolute;
+            left: 20px;
+            top: 80px;
+            background: var(--bg-panel);
+            border-radius: var(--border-radius);
+            box-shadow: var(--shadow);
+            display: flex;
+            flex-direction: column;
+            padding: 10px;
+            gap: 10px;
+            z-index: 90;
+        }
+
+        .tool-btn {
+            width: 44px;
+            height: 44px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 8px;
+            border: none;
+            background: transparent;
+            cursor: pointer;
+            font-size: 1.2rem;
+            color: var(--text-main);
+        }
+        
+        .tool-btn:hover { background: #f1f5f9; color: var(--primary-color); }
+        .tool-btn.active { background: #e0f2fe; color: var(--primary-color); }
+
+        /* JSON Drawer (Right) */
+        .drawer {
+            position: absolute;
+            top: 0;
+            right: -400px;
+            width: 400px;
+            height: 100%;
+            background: white;
+            box-shadow: -2px 0 10px rgba(0,0,0,0.1);
+            transition: right 0.3s ease;
+            z-index: 200;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .drawer.open { right: 0; }
+        
+        .drawer-header {
+            padding: 20px;
+            border-bottom: 1px solid #e2e8f0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-weight: bold;
+        }
+
+        .drawer-content {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        textarea.json-editor {
+            width: 100%;
+            flex: 1;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 12px;
+            padding: 10px;
+            border: 1px solid #cbd5e1;
+            border-radius: 8px;
+            resize: none;
+            background: #f8fafc;
+            color: #334155;
+        }
+
+        /* Language Switcher */
+        .lang-select {
+            padding: 8px;
+            border-radius: 8px;
+            border: 1px solid #cbd5e1;
+            background: white;
+            cursor: pointer;
+        }
+
+        /* Property Bar (Bottom/Selected Context) */
+        .property-bar {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--bg-panel);
+            padding: 10px 20px;
+            border-radius: var(--border-radius);
+            box-shadow: var(--shadow);
+            display: none; /* Hidden by default */
+            gap: 15px;
+            align-items: center;
+            z-index: 95;
+            flex-wrap: wrap;
+            justify-content: center;
+            width: 90%;
+            max-width: 600px;
+        }
+        
+        .property-bar.visible { display: flex; }
+
+        .prop-group { display: flex; align-items: center; gap: 8px; border-right: 1px solid #e2e8f0; padding-right: 15px; }
+        .prop-group:last-child { border-right: none; padding-right: 0; }
+
+        input[type="color"] { width: 30px; height: 30px; border: none; cursor: pointer; background: none; }
+        input[type="number"] { width: 60px; padding: 5px; border: 1px solid #cbd5e1; border-radius: 4px; }
+        select { padding: 5px; border: 1px solid #cbd5e1; border-radius: 4px; }
+
+        /* Notifications */
+        .toast {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            background: #334155;
+            color: white;
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            opacity: 0;
+            transition: opacity 0.3s;
+            pointer-events: none;
+            z-index: 300;
+        }
+        .toast.show { opacity: 1; }
+        
+        /* Mobile adjustments */
+        @media (max-width: 768px) {
+            .drawer { width: 100%; right: -100%; }
+            .top-bar { padding: 0 10px; }
+            .logo span { display: none; } /* Hide text logo on small screens */
+            .toolbar { top: auto; bottom: 100px; left: 10px; }
+            .property-bar { bottom: 10px; width: 95%; padding: 10px; }
+        }
+
+        /* Dropzone overlay */
+        #drop-overlay {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(59, 130, 246, 0.8);
+            z-index: 500;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 2rem;
+            font-weight: bold;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Canvas Container -->
+    <div id="canvas-container">
+        <canvas id="c"></canvas>
+    </div>
+
+    <!-- Drag Drop Overlay -->
+    <div id="drop-overlay">Upuść plik tutaj</div>
+
+    <!-- UI Layer -->
+    <div id="ui-layer">
+        
+        <!-- Top Bar -->
+        <div class="top-bar pointer-events-auto">
+            <div class="logo">
+                <i class="fa-solid fa-layer-group"></i> <span>ShotLingo</span>
+            </div>
+            
+            <div class="actions">
+                <select id="lang-switcher" class="lang-select">
+                    <option value="en-US">🇬🇧 en-US (Base)</option>
+                    <option value="pl-PL">🇵🇱 pl-PL</option>
+                    <option value="de-DE">🇩🇪 de-DE</option>
+                    <option value="fr-FR">🇫🇷 fr-FR</option>
+                    <option value="es-ES">🇪🇸 es-ES</option>
+                </select>
+                
+                <button class="btn" onclick="toggleDrawer()">
+                    <i class="fa-solid fa-code"></i> JSON
+                </button>
+                
+                <button class="btn primary" onclick="exportScreenshots()">
+                    <i class="fa-solid fa-download"></i> Eksportuj
+                </button>
+            </div>
+        </div>
+
+        <!-- Left Toolbar -->
+        <div class="toolbar pointer-events-auto">
+            <button class="tool-btn" onclick="addText()" title="Dodaj Tekst">
+                <i class="fa-solid fa-font"></i>
+            </button>
+            <button class="tool-btn" onclick="triggerImageUpload()" title="Dodaj Obraz">
+                <i class="fa-solid fa-image"></i>
+            </button>
+            <input type="file" id="img-upload" hidden accept="image/*" onchange="handleImageUpload(this)">
+            
+            <button class="tool-btn" onclick="addFrame('ios_65')" title="Ramka iOS 6.5">
+                <i class="fa-brands fa-apple"></i>
+            </button>
+            <button class="tool-btn" onclick="addFrame('android_phone')" title="Ramka Android">
+                <i class="fa-brands fa-android"></i>
+            </button>
+            
+            <div style="height: 1px; background: #e2e8f0; margin: 5px 0;"></div>
+
+            <button class="tool-btn" id="pan-tool" onclick="togglePanMode()" title="Przesuwanie (Spacja)">
+                <i class="fa-solid fa-hand"></i>
+            </button>
+        </div>
+
+        <!-- Property Bar (Contextual) -->
+        <div class="property-bar pointer-events-auto" id="prop-bar">
+            <!-- Text Properties -->
+            <div id="text-props" class="prop-group" style="display:none;">
+                <select id="font-family" onchange="updateActiveObject('fontFamily', this.value)">
+                    <option value="Arial">Arial</option>
+                    <option value="Helvetica">Helvetica</option>
+                    <option value="Times New Roman">Times New Roman</option>
+                    <option value="Courier New">Courier New</option>
+                    <option value="Verdana">Verdana</option>
+                </select>
+                <input type="number" id="font-size" value="40" onchange="updateActiveObject('fontSize', parseInt(this.value))">
+                <button class="btn" style="padding: 5px 10px;" onclick="toggleBold()"><i class="fa-solid fa-bold"></i></button>
+                <button class="btn" style="padding: 5px 10px;" onclick="toggleItalic()"><i class="fa-solid fa-italic"></i></button>
+            </div>
+
+            <!-- Frame Specific Properties -->
+            <div id="frame-props" class="prop-group" style="display:none;">
+                <span style="font-size: 0.8rem; color: #64748b; margin-right: 5px;">Klonuj do:</span>
+                <select id="clone-target" onchange="cloneFrameTo(this.value)">
+                    <option value="">Wybierz...</option>
+                    <option value="ios_65">iPhone 6.5"</option>
+                    <option value="ios_55">iPhone 5.5"</option>
+                    <option value="ipad_129">iPad 12.9"</option>
+                    <option value="android_phone">Android Phone</option>
+                    <option value="android_tablet7">Android Tablet 7"</option>
+                    <option value="android_tablet10">Android Tablet 10"</option>
+                </select>
+            </div>
+
+            <!-- Common Properties -->
+            <div class="prop-group">
+                <input type="color" id="fill-color" onchange="updateActiveObject('fill', this.value)">
+            </div>
+            
+            <!-- Layer Properties -->
+            <div class="prop-group">
+                <button class="btn" style="padding: 5px;" onclick="bringToFront()" title="Na wierzch"><i class="fa-solid fa-arrow-up"></i></button>
+                <button class="btn" style="padding: 5px;" onclick="sendToBack()" title="Na spód"><i class="fa-solid fa-arrow-down"></i></button>
+                <button class="btn" style="padding: 5px;" onclick="deleteActive()" title="Usuń"><i class="fa-solid fa-trash text-red-500"></i></button>
+            </div>
+        </div>
+
+        <!-- JSON Drawer -->
+        <div class="drawer pointer-events-auto" id="json-drawer">
+            <div class="drawer-header">
+                <span>Localization Hub (JSON)</span>
+                <button class="tool-btn" onclick="toggleDrawer()"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="drawer-content">
+                <p style="font-size: 0.8rem; color: #64748b;">
+                    Edytuj teksty poniżej lub skopiuj do AI (np. ChatGPT), aby przetłumaczyć na inne języki.
+                </p>
+                <div class="actions" style="margin-bottom: 10px;">
+                    <button class="btn" onclick="copyJSON()">Kopiuj</button>
+                    <button class="btn primary" onclick="applyJSON()">Zastosuj</button>
+                </div>
+                <textarea id="json-editor" class="json-editor"></textarea>
+            </div>
+        </div>
+        
+        <!-- Toast Notification -->
+        <div id="toast" class="toast">Action completed</div>
+
+    </div>
+
+    <script>
+        // --- 1. STATE MANAGEMENT ---
+        const state = {
+            currentLang: 'en-US',
+            translations: {
+                'en-US': {},
+                'pl-PL': {},
+                'de-DE': {},
+                'fr-FR': {},
+                'es-ES': {}
+            },
+            canvasBg: '#f0f0f0',
+            clipboard: null
+        };
+
+        // --- 2. CONFIGURATION ---
+        const FRAMES = {
+            'ios_65': { width: 1284, height: 2778, name: 'iPhone 6.5"' },
+            'ios_55': { width: 1242, height: 2208, name: 'iPhone 5.5"' },
+            'ipad_129': { width: 2048, height: 2732, name: 'iPad 12.9"' },
+            'android_phone': { width: 1080, height: 1920, name: 'Android Phone' },
+            'android_tablet7': { width: 1200, height: 1920, name: 'Android Tablet 7"' },
+            'android_tablet10': { width: 1600, height: 2560, name: 'Android Tablet 10"' },
+        };
+
+        // --- 3. CANVAS SETUP ---
+        const canvas = new fabric.Canvas('c', {
+            backgroundColor: '#f1f5f9',
+            preserveObjectStacking: true, // Needed for correct layer management
+            selection: true
+        });
+
+        // Resize handling
+        function resizeCanvas() {
+            canvas.setWidth(window.innerWidth);
+            canvas.setHeight(window.innerHeight);
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // --- 4. PANNING & ZOOMING (Infinite Canvas) ---
+        let isPanning = false;
+        let lastPosX, lastPosY;
+
+        canvas.on('mouse:wheel', function(opt) {
+            var delta = opt.e.deltaY;
+            var zoom = canvas.getZoom();
+            zoom *= 0.999 ** delta;
+            if (zoom > 20) zoom = 20;
+            if (zoom < 0.01) zoom = 0.01;
+            canvas.zoomToPoint({ x: opt.e.offsetX, y: opt.e.offsetY }, zoom);
+            opt.e.preventDefault();
+            opt.e.stopPropagation();
+        });
+
+        canvas.on('mouse:down', function(opt) {
+            var evt = opt.e;
+            // Alt Key or Pan Tool active
+            if (evt.altKey || document.getElementById('pan-tool').classList.contains('active')) {
+                this.isDragging = true;
+                this.selection = false;
+                this.lastPosX = evt.clientX;
+                this.lastPosY = evt.clientY;
+            }
+        });
+
+        canvas.on('mouse:move', function(opt) {
+            if (this.isDragging) {
+                var e = opt.e;
+                var vpt = this.viewportTransform;
+                vpt[4] += e.clientX - this.lastPosX;
+                vpt[5] += e.clientY - this.lastPosY;
+                this.requestRenderAll();
+                this.lastPosX = e.clientX;
+                this.lastPosY = e.clientY;
+            }
+        });
+
+        canvas.on('mouse:up', function(opt) {
+            this.setViewportTransform(this.viewportTransform);
+            this.isDragging = false;
+            this.selection = true;
+        });
+
+        function togglePanMode() {
+            const btn = document.getElementById('pan-tool');
+            btn.classList.toggle('active');
+            canvas.defaultCursor = btn.classList.contains('active') ? 'grab' : 'default';
+        }
+
+        // --- 5. LOGIC: ADDING OBJECTS ---
+
+        // Helper: Generate UUID
+        function uuidv4() {
+            return ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
+                (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)
+            );
+        }
+
+        // Add Text
+        function addText(initialText = "Nagłówek") {
+            const id = uuidv4();
+            const textObj = new fabric.Textbox(initialText, {
+                left: 100 - canvas.viewportTransform[4], // Adjust for pan
+                top: 100 - canvas.viewportTransform[5],
+                width: 300,
+                fontSize: 40,
+                fontFamily: 'Arial',
+                fill: '#000000',
+                textAlign: 'center',
+                textId: id // Custom property to link with JSON
+            });
+
+            // Add to translation state
+            state.translations[state.currentLang][id] = initialText;
+            // Pre-fill other languages with same text to avoid empty
+            Object.keys(state.translations).forEach(lang => {
+                if(lang !== state.currentLang) state.translations[lang][id] = initialText;
+            });
+
+            canvas.add(textObj);
+            canvas.setActiveObject(textObj);
+            updateJSONEditor();
+        }
+
+        // Add Frame (Rectangle representation for now)
+        function addFrame(type) {
+            const config = FRAMES[type];
+            if (!config) return;
+
+            // Group logic could be complex, simple rect for now acts as "Artboard" background
+            const rect = new fabric.Rect({
+                left: (window.innerWidth / 2 - config.width / 4) - canvas.viewportTransform[4],
+                top: (window.innerHeight / 2 - config.height / 4) - canvas.viewportTransform[5],
+                width: config.width,
+                height: config.height,
+                fill: '#ffffff',
+                stroke: '#cbd5e1',
+                strokeWidth: 2,
+                shadow: '0 10px 20px rgba(0,0,0,0.1)',
+                objectCaching: false,
+                isFrame: true, // Custom flag
+                deviceName: config.name
+            });
+            
+            // Text Label for the frame
+            const label = new fabric.Text(config.name, {
+                left: rect.left,
+                top: rect.top - 40,
+                fontSize: 30,
+                fill: '#64748b',
+                selectable: false
+            });
+
+            // Add basic guides/safe area? For now just the board.
+            // Scale down if huge
+            if (config.width > 1000) {
+                rect.scale(0.5); // Visual scale, export should handle full res
+            }
+
+            canvas.add(rect);
+            canvas.add(label);
+            canvas.sendToBack(rect);
+            canvas.renderAll();
+        }
+
+        // Image Handling
+        function triggerImageUpload() {
+            document.getElementById('img-upload').click();
+        }
+
+        function handleImageUpload(input) {
+            const file = input.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                fabric.Image.fromURL(e.target.result, function(img) {
+                    img.set({
+                        left: 200,
+                        top: 200,
+                        scaleX: 0.5,
+                        scaleY: 0.5
+                    });
+                    canvas.add(img);
+                    canvas.setActiveObject(img);
+                });
+            };
+            reader.readAsDataURL(file);
+            input.value = ''; // Reset
+        }
+        
+        // Drag and Drop Logic
+        const dropOverlay = document.getElementById('drop-overlay');
+        
+        window.addEventListener('dragenter', (e) => {
+            e.preventDefault();
+            dropOverlay.style.display = 'flex';
+        });
+        
+        dropOverlay.addEventListener('dragleave', (e) => {
+            e.preventDefault();
+            dropOverlay.style.display = 'none';
+        });
+        
+        dropOverlay.addEventListener('dragover', (e) => { e.preventDefault(); });
+        
+        dropOverlay.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropOverlay.style.display = 'none';
+            
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                const file = files[0];
+                if (file.type.startsWith('image/')) {
+                    const reader = new FileReader();
+                    reader.onload = function(f) {
+                        fabric.Image.fromURL(f.target.result, function(img) {
+                            img.set({
+                                left: e.clientX,
+                                top: e.clientY
+                            });
+                            canvas.add(img);
+                        });
+                    };
+                    reader.readAsDataURL(file);
+                }
+            }
+        });
+
+        // --- 6. LOGIC: INTERACTION & PROPERTIES ---
+
+        const propBar = document.getElementById('prop-bar');
+        const textProps = document.getElementById('text-props');
+        const fillColor = document.getElementById('fill-color');
+        const fontSizeInput = document.getElementById('font-size');
+        const fontFamilySelect = document.getElementById('font-family');
+
+        const frameProps = document.getElementById('frame-props');
+        const cloneTargetSelect = document.getElementById('clone-target');
+
+        canvas.on('selection:created', handleSelection);
+        canvas.on('selection:updated', handleSelection);
+        canvas.on('selection:cleared', () => {
+            propBar.classList.remove('visible');
+        });
+
+        function handleSelection(e) {
+            const obj = e.selected[0];
+            if (!obj) return;
+
+            propBar.classList.add('visible');
+            
+            // Common
+            fillColor.value = obj.fill || '#ffffff';
+
+            // Frame Specific
+            if (obj.isFrame) {
+                frameProps.style.display = 'flex';
+                cloneTargetSelect.value = ""; // Reset selection
+            } else {
+                frameProps.style.display = 'none';
+            }
+
+            // Text Specific
+            if (obj.type === 'textbox' || obj.type === 'text' || obj.type === 'i-text') {
+                textProps.style.display = 'flex';
+                fontSizeInput.value = obj.fontSize;
+                fontFamilySelect.value = obj.fontFamily;
+            } else {
+                textProps.style.display = 'none';
+            }
+        }
+
+        // Smart Clone Logic
+        function cloneFrameTo(targetKey) {
+            if (!targetKey) return;
+            
+            const originalFrame = canvas.getActiveObject();
+            if (!originalFrame || !originalFrame.isFrame) return;
+
+            const targetConfig = FRAMES[targetKey];
+            if (!targetConfig) return;
+
+            // 1. Create New Frame
+            // Offset it by some amount so it doesn't overlap perfectly
+            const newFrameLeft = originalFrame.left + originalFrame.width + 100;
+            const newFrameTop = originalFrame.top;
+
+            const newFrame = new fabric.Rect({
+                left: newFrameLeft,
+                top: newFrameTop,
+                width: targetConfig.width,
+                height: targetConfig.height,
+                fill: originalFrame.fill, // Copy bg color
+                stroke: '#cbd5e1',
+                strokeWidth: 2,
+                shadow: '0 10px 20px rgba(0,0,0,0.1)',
+                objectCaching: false,
+                isFrame: true,
+                deviceName: targetConfig.name
+            });
+
+            // Label for new frame
+            const newLabel = new fabric.Text(targetConfig.name, {
+                left: newFrameLeft,
+                top: newFrameTop - 40,
+                fontSize: 30,
+                fill: '#64748b',
+                selectable: false
+            });
+            
+            // 2. Find objects "inside" or overlapping the original frame
+            const objects = canvas.getObjects();
+            const objectsToClone = [];
+
+            objects.forEach(obj => {
+                if (obj === originalFrame || obj.text === originalFrame.deviceName) return; // Skip self and label
+                if (obj.selectable === false) return; // Skip non-interactive
+
+                // Simple collision detection or checking if center is inside
+                if (obj.intersectsWithObject(originalFrame) || originalFrame.containsPoint(obj.getCenterPoint())) {
+                    objectsToClone.push(obj);
+                }
+            });
+
+            canvas.add(newFrame);
+            canvas.add(newLabel);
+            canvas.sendToBack(newFrame);
+
+            // 3. Clone and Reposition Content
+            if (objectsToClone.length > 0) {
+                objectsToClone.forEach(obj => {
+                    obj.clone(function(cloned) {
+                        // Calculate relative position from original center
+                        const origCenter = originalFrame.getCenterPoint();
+                        const objCenter = obj.getCenterPoint();
+                        const diffX = objCenter.x - origCenter.x;
+                        const diffY = objCenter.y - origCenter.y;
+
+                        // Place on new frame center + diff
+                        // Note: This preserves absolute offset from center. 
+                        // For better "responsive" design, we might want percentage based, 
+                        // but centering is a safe default for "Smart Clone".
+                        
+                        const newCenterX = newFrameLeft + (targetConfig.width / 2) + diffX;
+                        const newCenterY = newFrameTop + (targetConfig.height / 2) + diffY;
+
+                        cloned.set({
+                            left: newCenterX - (cloned.width * cloned.scaleX) / 2, // approximate origin correction
+                            top: newCenterY - (cloned.height * cloned.scaleY) / 2,
+                            textId: obj.textId // CRITICAL: Keep same ID for translation sync!
+                        });
+
+                        // Adjust origin if needed (Fabric defaults to Top/Left usually)
+                        // More precise:
+                        cloned.setPositionByOrigin(
+                            new fabric.Point(newCenterX, newCenterY), 
+                            'center', 
+                            'center'
+                        );
+
+                        canvas.add(cloned);
+                    });
+                });
+            }
+
+            canvas.renderAll();
+            showToast(`Sklonowano do ${targetConfig.name}`);
+            
+            // Reset selector
+            cloneTargetSelect.value = "";
+        }
+
+        function updateActiveObject(prop, value) {
+            const obj = canvas.getActiveObject();
+            if (obj) {
+                obj.set(prop, value);
+                canvas.requestRenderAll();
+            }
+        }
+
+        function toggleBold() {
+            const obj = canvas.getActiveObject();
+            if (obj && (obj.type === 'textbox' || obj.type === 'text')) {
+                obj.set('fontWeight', obj.fontWeight === 'bold' ? 'normal' : 'bold');
+                canvas.requestRenderAll();
+            }
+        }
+
+        function toggleItalic() {
+            const obj = canvas.getActiveObject();
+            if (obj && (obj.type === 'textbox' || obj.type === 'text')) {
+                obj.set('fontStyle', obj.fontStyle === 'italic' ? 'normal' : 'italic');
+                canvas.requestRenderAll();
+            }
+        }
+        
+        function bringToFront() {
+            const obj = canvas.getActiveObject();
+            if(obj) { canvas.bringToFront(obj); canvas.discardActiveObject(); canvas.renderAll(); }
+        }
+        
+        function sendToBack() {
+            const obj = canvas.getActiveObject();
+            if(obj) { canvas.sendToBack(obj); canvas.discardActiveObject(); canvas.renderAll(); }
+        }
+
+        function deleteActive() {
+            const obj = canvas.getActiveObject();
+            if (obj) {
+                // If text, remove from current translation? No, keep ID in case of undo/other langs.
+                // Or maybe warn user. For now, just remove visual.
+                canvas.remove(obj);
+                canvas.discardActiveObject();
+                canvas.renderAll();
+            }
+        }
+
+        // --- 7. LOGIC: TRANSLATION SYSTEM ---
+
+        // Listener for text editing on canvas
+        canvas.on('text:changed', function(e) {
+            const obj = e.target;
+            if (obj.textId) {
+                // Update state
+                state.translations[state.currentLang][obj.textId] = obj.text;
+                updateJSONEditor();
+            }
+        });
+
+        // Language Switcher
+        document.getElementById('lang-switcher').addEventListener('change', function(e) {
+            const newLang = e.target.value;
+            switchLanguage(newLang);
+        });
+
+        function switchLanguage(lang) {
+            state.currentLang = lang;
+            
+            // Iterate all objects and update text
+            const objects = canvas.getObjects();
+            objects.forEach(obj => {
+                if (obj.textId && state.translations[lang] && state.translations[lang][obj.textId]) {
+                    obj.set('text', state.translations[lang][obj.textId]);
+                }
+            });
+            
+            canvas.renderAll();
+            updateJSONEditor();
+            showToast(`Język zmieniony na: ${lang}`);
+        }
+
+        // JSON Drawer Logic
+        const drawer = document.getElementById('json-drawer');
+        const jsonEditor = document.getElementById('json-editor');
+
+        function toggleDrawer() {
+            drawer.classList.toggle('open');
+            if (drawer.classList.contains('open')) {
+                updateJSONEditor();
+            }
+        }
+
+        function updateJSONEditor() {
+            // We show the FULL translation object or just the current lang?
+            // The req says "all texts with translations". Let's show full object.
+            jsonEditor.value = JSON.stringify(state.translations, null, 2);
+        }
+
+        function applyJSON() {
+            try {
+                const newData = JSON.parse(jsonEditor.value);
+                state.translations = newData;
+                // Re-apply text for current lang
+                switchLanguage(state.currentLang);
+                showToast("JSON załadowany pomyślnie");
+            } catch (e) {
+                alert("Błąd JSON: " + e.message);
+            }
+        }
+
+        function copyJSON() {
+            jsonEditor.select();
+            document.execCommand('copy');
+            showToast("Skopiowano do schowka");
+        }
+
+        // --- 8. EXPORT LOGIC ---
+
+        async function exportScreenshots() {
+            showToast("Generowanie zrzutów... Proszę czekać.");
+            const zip = new JSZip();
+            
+            // Save current state to restore later
+            const initialLang = state.currentLang;
+            const initialZoom = canvas.getZoom();
+            const initialVpt = canvas.viewportTransform;
+
+            // Find all frame objects (rectangles with isFrame=true)
+            const frames = canvas.getObjects().filter(o => o.isFrame);
+            
+            if (frames.length === 0) {
+                alert("Nie dodano żadnych ramek (ekranów). Dodaj ramkę z menu po lewej.");
+                return;
+            }
+
+            // We need to iterate Languages -> Frames
+            const languages = Object.keys(state.translations);
+
+            // Temporarily reset view for correct cropping
+            // Actually, toDataURL with 'cropping' works best with absolute coords
+            
+            for (let lang of languages) {
+                // 1. Switch Language
+                switchLanguage(lang); // This updates text objects
+                
+                // Allow render to catch up (rarely needed in sync JS but good practice)
+                await new Promise(r => setTimeout(r, 50));
+
+                const langFolder = zip.folder(lang);
+
+                for (let i = 0; i < frames.length; i++) {
+                    const frame = frames[i];
+                    
+                    // Logic to export specific area
+                    // We need to account for scale if user scaled the frame
+                    const dataURL = canvas.toDataURL({
+                        left: frame.left,
+                        top: frame.top,
+                        width: frame.width * frame.scaleX,
+                        height: frame.height * frame.scaleY,
+                        multiplier: 1 / frame.scaleX, // Restore original resolution if it was visually scaled down
+                        format: 'png'
+                    });
+                    
+                    // Remove header
+                    const base64Data = dataURL.replace(/^data:image\/png;base64,/, "");
+                    const fileName = `${frame.deviceName.replace(/\s+/g, '_')}_${i+1}.png`;
+                    
+                    langFolder.file(fileName, base64Data, {base64: true});
+                }
+            }
+
+            // Restore original state
+            switchLanguage(initialLang);
+
+            // Generate ZIP
+            zip.generateAsync({type:"blob"})
+            .then(function(content) {
+                saveAs(content, "shotlingo_export.zip");
+                showToast("Gotowe! Pobieranie...");
+            });
+        }
+
+        // --- UTILS ---
+        function showToast(msg) {
+            const t = document.getElementById('toast');
+            t.textContent = msg;
+            t.classList.add('show');
+            setTimeout(() => t.classList.remove('show'), 3000);
+        }
+
+        // Initial call
+        updateJSONEditor();
+
+    </script>
+</body>
+</html>
