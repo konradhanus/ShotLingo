@@ -288,6 +288,11 @@
                     <i class="fa-solid fa-code"></i> JSON
                 </button>
                 
+                <div style="display:flex; align-items:center; gap:5px; margin-right:10px;">
+                    <span style="font-size:0.8rem; color:#64748b;">Tło:</span>
+                    <input type="color" id="global-bg-picker" value="#ffffff" title="Zmień tło wszystkich ekranów" onchange="setGlobalBackground(this.value)">
+                </div>
+
                 <button class="btn primary" onclick="exportScreenshots()">
                     <i class="fa-solid fa-download"></i> Eksportuj
                 </button>
@@ -351,6 +356,9 @@
             <!-- Common Properties -->
             <div class="prop-group">
                 <input type="color" id="fill-color" onchange="updateActiveObject('fill', this.value)">
+                <button class="btn" id="ratio-lock-btn" style="padding: 5px 10px;" onclick="toggleAspectRatio()" title="Zablokuj/Odblokuj proporcje">
+                    <i class="fa-solid fa-lock"></i>
+                </button>
             </div>
             
             <!-- Layer Properties -->
@@ -413,7 +421,68 @@
         const canvas = new fabric.Canvas('c', {
             backgroundColor: '#f1f5f9',
             preserveObjectStacking: true, // Needed for correct layer management
-            selection: true
+            selection: true,
+            uniformScaling: true // Default to proportional scaling
+        });
+
+        // --- GRID IMPLEMENTATION ---
+        const gridSize = 50;
+        
+        canvas.on('after:render', function() {
+            const context = canvas.getContext();
+            const vpt = canvas.viewportTransform;
+            const zoom = canvas.getZoom();
+            
+            // Only draw grid if zoom is reasonable
+            if (zoom < 0.2) return;
+
+            const viewportWidth = canvas.width / zoom;
+            const viewportHeight = canvas.height / zoom;
+            
+            const startX = -vpt[4] / zoom;
+            const startY = -vpt[5] / zoom;
+            const endX = startX + viewportWidth;
+            const endY = startY + viewportHeight;
+
+            context.beginPath();
+            context.strokeStyle = '#e2e8f0';
+            context.lineWidth = 1 / zoom;
+
+            // Vertical lines
+            const offsetX = startX % gridSize;
+            for (let i = startX - offsetX; i < endX; i += gridSize) {
+                const screenX = (i * zoom) + vpt[4];
+                context.moveTo(screenX, 0);
+                context.lineTo(screenX, canvas.height);
+            }
+
+            // Horizontal lines
+            const offsetY = startY % gridSize;
+            for (let i = startY - offsetY; i < endY; i += gridSize) {
+                const screenY = (i * zoom) + vpt[5];
+                context.moveTo(0, screenY);
+                context.lineTo(canvas.width, screenY);
+            }
+            
+            context.stroke();
+        });
+
+        // --- SNAPPING LOGIC ---
+        const SNAP_DIST = 10;
+        
+        canvas.on('object:moving', function(e) {
+            const obj = e.target;
+            const vpt = canvas.viewportTransform;
+            
+            // Snap to Grid
+            // Simple approach: round position to nearest gridSize
+            if (!e.e.shiftKey) { // Hold shift to disable snap
+                obj.left = Math.round(obj.left / gridSize) * gridSize;
+                obj.top = Math.round(obj.top / gridSize) * gridSize;
+            }
+            
+            // Advanced: Snap to other objects (center/edges) could be added here
+            // For now, grid snapping provides good alignment.
         });
 
         // Resize handling
@@ -638,6 +707,15 @@
             
             // Common
             fillColor.value = obj.fill || '#ffffff';
+            
+            // Update lock button state
+            const lockBtn = document.getElementById('ratio-lock-btn');
+            // Check if uniformScaling is explicitly false (unlocked)
+            if (obj.uniformScaling === false) {
+                 lockBtn.innerHTML = '<i class="fa-solid fa-lock-open"></i>';
+            } else {
+                 lockBtn.innerHTML = '<i class="fa-solid fa-lock"></i>';
+            }
 
             // Frame Specific
             if (obj.isFrame) {
@@ -763,6 +841,45 @@
                 obj.set(prop, value);
                 canvas.requestRenderAll();
             }
+        }
+
+        // Global Background
+        function setGlobalBackground(color) {
+            const objects = canvas.getObjects();
+            let count = 0;
+            objects.forEach(obj => {
+                if (obj.isFrame) {
+                    obj.set('fill', color);
+                    count++;
+                }
+            });
+            canvas.renderAll();
+            showToast(`Zaktualizowano tło dla ${count} ekranów`);
+        }
+
+        // Aspect Ratio Toggle
+        function toggleAspectRatio() {
+            const obj = canvas.getActiveObject();
+            if (!obj) return;
+            
+            // Fabric uses 'uniformScaling' property (true = locked ratio, false = free)
+            // Or 'lockUniScaling' depending on version/config.
+            // Let's toggle both to be safe and update UI.
+            
+            const current = obj.uniformScaling;
+            obj.set('uniformScaling', !current);
+            
+            // Update button icon
+            const btn = document.getElementById('ratio-lock-btn');
+            if (obj.uniformScaling) {
+                btn.innerHTML = '<i class="fa-solid fa-lock"></i>';
+                showToast("Proporcje: Zablokowane");
+            } else {
+                btn.innerHTML = '<i class="fa-solid fa-lock-open"></i>';
+                showToast("Proporcje: Odblokowane");
+            }
+            
+            canvas.requestRenderAll();
         }
 
         function toggleBold() {
