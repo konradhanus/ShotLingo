@@ -437,7 +437,7 @@
         // --- GRID IMPLEMENTATION ---
         const gridSize = 50;
         
-        canvas.on('after:render', function() {
+        canvas.on('before:render', function() {
             const context = canvas.getContext();
             const vpt = canvas.viewportTransform;
             const zoom = canvas.getZoom();
