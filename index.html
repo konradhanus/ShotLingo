@@ -261,7 +261,7 @@
             color: white;
             font-size: 2rem;
             font-weight: bold;
-            pointer-events: none;
+            pointer-events: auto;
         }
 
         /* Minimap */
@@ -477,8 +477,18 @@
             backgroundColor: '#f1f5f9',
             preserveObjectStacking: true,
             selection: true,
-            uniformScaling: true
+            uniformScaling: true,
+            fireMiddleClick: true, // Required for middle click events
+            stopContextMenu: true  // Good practice when using right/middle click
         });
+
+        // Prevent browser's middle-click autoscroll
+        canvas.upperCanvasEl.addEventListener('mousedown', function(e) {
+            if (e.button === 1) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+        }, { passive: false });
 
         // --- HISTORY (UNDO/REDO) ---
         function saveHistory() {
@@ -1066,18 +1076,16 @@
             var evt = opt.e;
             // Alt Key, Pan Tool active, OR Middle Mouse Button (button === 1)
             if (evt.altKey || document.getElementById('pan-tool').classList.contains('active') || evt.button === 1) {
-                // Prevent default middle click scrolling/behavior
-                if (evt.button === 1) {
-                    evt.preventDefault();
-                    evt.stopPropagation();
-                }
-                
                 this.isDragging = true;
                 this.selection = false;
                 this.lastPosX = evt.clientX;
                 this.lastPosY = evt.clientY;
                 this.defaultCursor = 'grabbing';
                 this.setCursor('grabbing');
+                
+                // Discard active object to prevent accidental moves while panning
+                canvas.discardActiveObject();
+                canvas.requestRenderAll();
             }
         });
 
@@ -1293,20 +1301,26 @@
         // Drag and Drop Logic
         const dropOverlay = document.getElementById('drop-overlay');
         
+        // Prevent browser from opening files globally
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            window.addEventListener(eventName, (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+            }, false);
+        });
+
         window.addEventListener('dragenter', (e) => {
-            e.preventDefault();
             dropOverlay.style.display = 'flex';
         });
         
         dropOverlay.addEventListener('dragleave', (e) => {
-            e.preventDefault();
-            dropOverlay.style.display = 'none';
+            // Only hide if we actually leave the overlay
+            if (e.relatedTarget === null || !dropOverlay.contains(e.relatedTarget)) {
+                dropOverlay.style.display = 'none';
+            }
         });
         
-        dropOverlay.addEventListener('dragover', (e) => { e.preventDefault(); });
-        
         dropOverlay.addEventListener('drop', (e) => {
-            e.preventDefault();
             dropOverlay.style.display = 'none';
             
             const files = e.dataTransfer.files;
@@ -1316,11 +1330,26 @@
                     const reader = new FileReader();
                     reader.onload = function(f) {
                         fabric.Image.fromURL(f.target.result, function(img) {
+                            // Calculate world coordinates from screen coordinates
+                            const vpt = canvas.viewportTransform;
+                            const zoom = canvas.getZoom();
+                            
+                            const worldX = (e.clientX - vpt[4]) / zoom;
+                            const worldY = (e.clientY - vpt[5]) / zoom;
+
                             img.set({
-                                left: e.clientX,
-                                top: e.clientY
+                                left: worldX,
+                                top: worldY,
+                                originX: 'center',
+                                originY: 'center',
+                                scaleX: 0.5 / zoom,
+                                scaleY: 0.5 / zoom
                             });
                             canvas.add(img);
+                            canvas.setActiveObject(img);
+                            checkForClipping(img);
+                            saveHistory();
+                            saveLocalState();
                         });
                     };
                     reader.readAsDataURL(file);
