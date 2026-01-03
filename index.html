@@ -289,6 +289,11 @@
                 </button>
                 
                 <div style="display:flex; align-items:center; gap:5px; margin-right:10px;">
+                    <input type="checkbox" id="safe-area-toggle" onchange="toggleSafeAreas(this.checked)">
+                    <span style="font-size:0.8rem; color:#64748b; cursor:pointer;" onclick="document.getElementById('safe-area-toggle').click()">Safe Area</span>
+                </div>
+
+                <div style="display:flex; align-items:center; gap:5px; margin-right:10px;">
                     <span style="font-size:0.8rem; color:#64748b;">Tło:</span>
                     <input type="color" id="global-bg-picker" value="#ffffff" title="Zmień tło wszystkich ekranów" onchange="setGlobalBackground(this.value)">
                 </div>
@@ -337,6 +342,10 @@
                 <input type="number" id="font-size" value="40" onchange="updateActiveObject('fontSize', parseInt(this.value))">
                 <button class="btn" style="padding: 5px 10px;" onclick="toggleBold()"><i class="fa-solid fa-bold"></i></button>
                 <button class="btn" style="padding: 5px 10px;" onclick="toggleItalic()"><i class="fa-solid fa-italic"></i></button>
+                <!-- Alignment -->
+                <button class="btn" style="padding: 5px 10px;" onclick="setTextAlign('left')"><i class="fa-solid fa-align-left"></i></button>
+                <button class="btn" style="padding: 5px 10px;" onclick="setTextAlign('center')"><i class="fa-solid fa-align-center"></i></button>
+                <button class="btn" style="padding: 5px 10px;" onclick="setTextAlign('right')"><i class="fa-solid fa-align-right"></i></button>
             </div>
 
             <!-- Frame Specific Properties -->
@@ -497,6 +506,7 @@
         let isPanning = false;
         let lastPosX, lastPosY;
 
+        // Desktop Wheel Zoom
         canvas.on('mouse:wheel', function(opt) {
             var delta = opt.e.deltaY;
             var zoom = canvas.getZoom();
@@ -506,6 +516,74 @@
             canvas.zoomToPoint({ x: opt.e.offsetX, y: opt.e.offsetY }, zoom);
             opt.e.preventDefault();
             opt.e.stopPropagation();
+        });
+
+        // Touch Gestures (Pinch Zoom & Pan)
+        let lastTouchDistance = 0;
+        let isTouchDragging = false;
+        let lastTouchX = 0;
+        let lastTouchY = 0;
+
+        canvas.upperCanvasEl.addEventListener('touchstart', function(e) {
+            if (e.touches.length === 2) {
+                // Pinch start
+                isTouchDragging = false;
+                const p1 = {x: e.touches[0].clientX, y: e.touches[0].clientY};
+                const p2 = {x: e.touches[1].clientX, y: e.touches[1].clientY};
+                lastTouchDistance = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+            } else if (e.touches.length === 1) {
+                // Pan start (if mode is active or implicitly on bg)
+                const target = canvas.findTarget(e);
+                // Allow pan if not targeting an object or if pan tool is active
+                if (!target || document.getElementById('pan-tool').classList.contains('active')) {
+                     isTouchDragging = true;
+                     lastTouchX = e.touches[0].clientX;
+                     lastTouchY = e.touches[0].clientY;
+                }
+            }
+        });
+
+        canvas.upperCanvasEl.addEventListener('touchmove', function(e) {
+            if (e.touches.length === 2) {
+                // Pinch Zoom
+                e.preventDefault(); // Prevent browser zoom
+                const p1 = {x: e.touches[0].clientX, y: e.touches[0].clientY};
+                const p2 = {x: e.touches[1].clientX, y: e.touches[1].clientY};
+                const currentDistance = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+
+                if (lastTouchDistance > 0) {
+                    const scale = currentDistance / lastTouchDistance;
+                    let zoom = canvas.getZoom() * scale;
+                    if (zoom > 5) zoom = 5;
+                    if (zoom < 0.1) zoom = 0.1;
+                    
+                    // Zoom to center of pinch
+                    const centerPoint = new fabric.Point(
+                        (p1.x + p2.x) / 2,
+                        (p1.y + p2.y) / 2
+                    );
+                    
+                    canvas.zoomToPoint(centerPoint, zoom);
+                    canvas.requestRenderAll();
+                }
+                lastTouchDistance = currentDistance;
+            } else if (e.touches.length === 1 && isTouchDragging) {
+                // Touch Pan
+                e.preventDefault();
+                const x = e.touches[0].clientX;
+                const y = e.touches[0].clientY;
+                const vpt = canvas.viewportTransform;
+                vpt[4] += x - lastTouchX;
+                vpt[5] += y - lastTouchY;
+                canvas.requestRenderAll();
+                lastTouchX = x;
+                lastTouchY = y;
+            }
+        });
+
+        canvas.upperCanvasEl.addEventListener('touchend', function(e) {
+            isTouchDragging = false;
+            lastTouchDistance = 0;
         });
 
         canvas.on('mouse:down', function(opt) {
@@ -583,7 +661,6 @@
             const config = FRAMES[type];
             if (!config) return;
 
-            // Group logic could be complex, simple rect for now acts as "Artboard" background
             const rect = new fabric.Rect({
                 left: (window.innerWidth / 2 - config.width / 4) - canvas.viewportTransform[4],
                 top: (window.innerHeight / 2 - config.height / 4) - canvas.viewportTransform[5],
@@ -592,6 +669,8 @@
                 fill: '#ffffff',
                 stroke: '#cbd5e1',
                 strokeWidth: 2,
+                rx: 40, // Rounded Corners
+                ry: 40,
                 shadow: '0 10px 20px rgba(0,0,0,0.1)',
                 objectCaching: false,
                 isFrame: true, // Custom flag
@@ -607,16 +686,54 @@
                 selectable: false
             });
 
-            // Add basic guides/safe area? For now just the board.
-            // Scale down if huge
+            // Scale down if huge (default view)
             if (config.width > 1000) {
-                rect.scale(0.5); // Visual scale, export should handle full res
+                rect.scale(0.5); 
             }
 
             canvas.add(rect);
             canvas.add(label);
             canvas.sendToBack(rect);
             canvas.renderAll();
+        }
+
+        // ... [Image Handling and Drop logic same as before] ...
+
+        // Safe Area Logic
+        function toggleSafeAreas(show) {
+            const objects = canvas.getObjects();
+            
+            if (!show) {
+                // Remove existing safe areas
+                const overlays = objects.filter(o => o.isSafeArea);
+                overlays.forEach(o => canvas.remove(o));
+            } else {
+                // Add safe areas to all frames
+                const frames = objects.filter(o => o.isFrame);
+                frames.forEach(frame => {
+                    const margin = Math.min(frame.width * frame.scaleX, frame.height * frame.scaleY) * 0.05; // 5% margin
+                    
+                    const safeRect = new fabric.Rect({
+                        left: frame.left + margin,
+                        top: frame.top + margin,
+                        width: (frame.width * frame.scaleX) - (margin * 2),
+                        height: (frame.height * frame.scaleY) - (margin * 2),
+                        fill: 'transparent',
+                        stroke: 'rgba(255, 0, 0, 0.5)',
+                        strokeWidth: 2,
+                        strokeDashArray: [10, 10],
+                        selectable: false,
+                        evented: false,
+                        isSafeArea: true
+                    });
+                    canvas.add(safeRect);
+                });
+            }
+            canvas.renderAll();
+        }
+
+        function setTextAlign(align) {
+             updateActiveObject('textAlign', align);
         }
 
         // Image Handling
