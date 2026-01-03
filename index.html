@@ -442,11 +442,6 @@
         <!-- Toast Notification -->
         <div id="toast" class="toast">Action completed</div>
 
-        <!-- Minimap -->
-        <div id="minimap-container" class="pointer-events-auto">
-            <canvas id="minimap"></canvas>
-        </div>
-
     </div>
 
     <script>
@@ -580,6 +575,39 @@
                     deleteActive();
                 }
             }
+
+            // Arrow Keys (Move Objects)
+            if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+                const activeObj = canvas.getActiveObject();
+                if (activeObj && !activeObj.isEditing) {
+                    e.preventDefault();
+                    const step = e.shiftKey ? 10 : 1;
+                    
+                    switch (e.key) {
+                        case 'ArrowUp': activeObj.top -= step; break;
+                        case 'ArrowDown': activeObj.top += step; break;
+                        case 'ArrowLeft': activeObj.left -= step; break;
+                        case 'ArrowRight': activeObj.left += step; break;
+                    }
+                    
+                    activeObj.setCoords();
+                    
+                    // If moving a frame, update its label and clips
+                    if (activeObj.isFrame) {
+                        if (activeObj.frameLabel) {
+                            activeObj.frameLabel.set({
+                                left: activeObj.left,
+                                top: activeObj.top - 50
+                            });
+                        }
+                        syncFrameClips(activeObj);
+                        updateSafeAreaPosition(activeObj);
+                    }
+                    
+                    canvas.requestRenderAll();
+                    debouncedSave();
+                }
+            }
         });
 
         // --- COPY / PASTE ---
@@ -674,7 +702,7 @@
         canvas.on('object:removed', () => { saveHistory(); debouncedSave(); });
         canvas.on('text:changed', () => { saveHistory(); debouncedSave(); }); // Ensure text changes trigger save
 
-        // --- LOCAL STORAGE PERSISTENCE (UPGRADED TO INDEXEDDB) ---
+        // --- LOCAL STORAGE PERSISTENCE (UPGRADED TO INDEXEDDB WITH LOCALSTORAGE FALLBACK) ---
         const LOCAL_STORAGE_KEY = 'timo_v1_db';
         let saveTimeout = null;
 
@@ -687,37 +715,60 @@
             }
 
             if (saveTimeout) clearTimeout(saveTimeout);
-            saveTimeout = setTimeout(saveLocalState, 500); // Reduced to 500ms
+            saveTimeout = setTimeout(saveLocalState, 300); // 300ms for snappier feel
         }
 
         async function saveLocalState() {
             if (state.isProcessingHistory) return;
 
             const dataToSave = {
-                version: '1.1',
+                version: '1.2',
                 currentLang: state.currentLang,
                 translations: state.translations,
-                // Removed 'frameLabel' from toJSON to avoid circular refs/duplication. 
-                // We rely on 'linkedFrameId' and 'id' to restore links.
                 canvas: canvas.toJSON(['id', 'textId', 'isFrame', 'deviceName', 'isSafeArea', 'linkedFrameId', 'clippedByFrameId'])
             };
 
             try {
-                await localforage.setItem(LOCAL_STORAGE_KEY, dataToSave);
+                // Try LocalForage (IndexedDB)
+                if (typeof localforage !== 'undefined') {
+                    await localforage.setItem(LOCAL_STORAGE_KEY, dataToSave);
+                } else {
+                    throw new Error('localforage undefined');
+                }
                 
-                // Show "Saved" confirmation
                 const t = document.getElementById('toast');
                 t.textContent = "Zapisano";
-                setTimeout(() => t.classList.remove('show'), 1000);
+                setTimeout(() => { if(t.textContent === "Zapisano") t.classList.remove('show') }, 1000);
             } catch (e) {
-                console.error('Failed to save to IndexedDB', e);
-                showToast('Błąd autozapisu!');
+                console.warn('Failed to save to IndexedDB, trying LocalStorage', e);
+                try {
+                    // Fallback to standard LocalStorage
+                    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(dataToSave));
+                    const t = document.getElementById('toast');
+                    t.textContent = "Zapisano (LS)";
+                    setTimeout(() => { if(t.textContent === "Zapisano (LS)") t.classList.remove('show') }, 1000);
+                } catch (lsError) {
+                    console.error('Persistence failed completely', lsError);
+                    showToast('Błąd zapisu! (Brak miejsca?)');
+                }
             }
         }
 
         async function loadLocalState() {
             try {
-                const savedData = await localforage.getItem(LOCAL_STORAGE_KEY);
+                let savedData = null;
+                
+                // 1. Try LocalForage
+                if (typeof localforage !== 'undefined') {
+                    savedData = await localforage.getItem(LOCAL_STORAGE_KEY);
+                }
+                
+                // 2. Try LocalStorage Fallback
+                if (!savedData) {
+                    const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
+                    if (raw) savedData = JSON.parse(raw);
+                }
+
                 if (!savedData) {
                     saveHistory(); // Initialize history
                     return;
@@ -1694,58 +1745,53 @@
             const height = minimapCanvas.height;
 
             // Clear and set background
-            minimapCtx.clearRect(0, 0, width, height);
-            minimapCtx.fillStyle = '#f8fafc';
-            minimapCtx.fillRect(0,0, width, height);
+            minimapCtx.fillStyle = '#f1f5f9';
+            minimapCtx.fillRect(0, 0, width, height);
 
             const objects = canvas.getObjects().filter(o => !o.excludeFromExport && !o.isSafeArea);
             
-            // Calculate World Bounds
-            let minX = -2000, minY = -2000, maxX = 2000, maxY = 2000;
+            // Current viewport in world coords
+            const vpt = canvas.viewportTransform;
+            const zoom = canvas.getZoom();
+            const viewX = -vpt[4] / zoom;
+            const viewY = -vpt[5] / zoom;
+            const viewW = canvas.width / zoom;
+            const viewH = canvas.height / zoom;
+
+            // Calculate World Bounds (Objects + Viewport)
+            let minX = viewX, minY = viewY, maxX = viewX + viewW, maxY = viewY + viewH;
             
             if (objects.length > 0) {
-                let objMinX = Infinity, objMinY = Infinity, objMaxX = -Infinity, objMaxY = -Infinity;
                 objects.forEach(obj => {
-                    const coords = obj.getCoords();
-                    coords.forEach(p => {
-                        if (p.x < objMinX) objMinX = p.x;
-                        if (p.y < objMinY) objMinY = p.y;
-                        if (p.x > objMaxX) objMaxX = p.x;
-                        if (p.y > objMaxY) objMaxY = p.y;
-                    });
+                    const br = obj.getBoundingRect(true);
+                    if (br.left < minX) minX = br.left;
+                    if (br.top < minY) minY = br.top;
+                    if (br.left + br.width > maxX) maxX = br.left + br.width;
+                    if (br.top + br.height > maxY) maxY = br.top + br.height;
                 });
-                
-                // Add padding for better context
-                const padding = 1500; 
-                minX = objMinX - padding;
-                minY = objMinY - padding;
-                maxX = objMaxX + padding;
-                maxY = objMaxY + padding;
             }
+
+            // Add padding
+            const padding = 300; 
+            minX -= padding; minY -= padding; maxX += padding; maxY += padding;
 
             const worldWidth = maxX - minX;
             const worldHeight = maxY - minY;
 
-            // Maintain aspect ratio while fitting world in minimap
-            const scaleX = width / worldWidth;
-            const scaleY = height / worldHeight;
-            const minimapScale = Math.min(scaleX, scaleY);
-            
-            const renderWidth = worldWidth * minimapScale;
-            const renderHeight = worldHeight * minimapScale;
-            const offsetX = (width - renderWidth) / 2;
-            const offsetY = (height - renderHeight) / 2;
+            const minimapScale = Math.min(width / worldWidth, height / worldHeight);
+            const offsetX = (width - (worldWidth * minimapScale)) / 2;
+            const offsetY = (height - (worldHeight * minimapScale)) / 2;
 
-            // Persist transform data for interaction logic
+            // Data for interaction
             minimapCanvas.dataset.scale = minimapScale;
             minimapCanvas.dataset.minX = minX;
             minimapCanvas.dataset.minY = minY;
             minimapCanvas.dataset.offsetX = offsetX;
             minimapCanvas.dataset.offsetY = offsetY;
 
-            // Render elements on minimap
+            // Draw Objects
             objects.forEach(obj => {
-                const br = obj.getBoundingRect();
+                const br = obj.getBoundingRect(true);
                 const x = offsetX + (br.left - minX) * minimapScale;
                 const y = offsetY + (br.top - minY) * minimapScale;
                 const w = br.width * minimapScale;
@@ -1755,35 +1801,23 @@
                 minimapCtx.fillRect(x, y, w, h);
             });
             
-            // Render Viewport Indicator
-            const vpt = canvas.viewportTransform;
-            const zoom = canvas.getZoom();
-            
-            const viewX = -vpt[4] / zoom;
-            const viewY = -vpt[5] / zoom;
-            const viewW = canvas.width / zoom;
-            const viewH = canvas.height / zoom;
-            
+            // Draw Viewport Indicator
             const mapVx = offsetX + (viewX - minX) * minimapScale;
             const mapVy = offsetY + (viewY - minY) * minimapScale;
             const mapVw = viewW * minimapScale;
             const mapVh = viewH * minimapScale;
             
-            // Viewport stroke
+            // Viewport Shadow
+            minimapCtx.fillStyle = 'rgba(0,0,0,0.1)';
+            minimapCtx.fillRect(0, 0, width, mapVy); // Top
+            minimapCtx.fillRect(0, mapVy + mapVh, width, height - (mapVy + mapVh)); // Bottom
+            minimapCtx.fillRect(0, mapVy, mapVx, mapVh); // Left
+            minimapCtx.fillRect(mapVx + mapVw, mapVy, width - (mapVx + mapVw), mapVh); // Right
+
+            // Viewport Stroke
             minimapCtx.strokeStyle = '#3b82f6';
             minimapCtx.lineWidth = 2;
             minimapCtx.strokeRect(mapVx, mapVy, mapVw, mapVh);
-            
-            // "Fog of War" overlay for areas outside viewport
-            minimapCtx.fillStyle = 'rgba(0,0,0,0.05)';
-            // Top
-            minimapCtx.fillRect(0, 0, width, Math.max(0, mapVy));
-            // Bottom
-            minimapCtx.fillRect(0, mapVy + mapVh, width, Math.max(0, height - (mapVy + mapVh)));
-            // Left
-            minimapCtx.fillRect(0, Math.max(0, mapVy), Math.max(0, mapVx), mapVh);
-            // Right
-            minimapCtx.fillRect(mapVx + mapVw, Math.max(0, width - (mapVx + mapVw)), mapVh);
         }
         
         canvas.on('after:render', updateMinimap);
