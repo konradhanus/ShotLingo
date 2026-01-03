@@ -375,8 +375,9 @@
             border-radius: 4px;
         }
         .layer-action-btn:hover { background: #cbd5e1; color: #334155; }
-        .layer-action-btn.hidden { color: #cbd5e1; }
-
+        .layer-action-btn.hidden, .layer-action-btn.locked { color: var(--primary-color); opacity: 1; }
+        .layer-item.is-locked { background: #f8fafc; opacity: 0.8; }
+        
         /* Layers Folder Controls */
         .layers-controls {
             padding: 8px 15px;
@@ -534,6 +535,16 @@
                 </select>
             </div>
 
+            <!-- Image Specific Properties -->
+            <div id="image-props" class="prop-group" style="display:none;">
+                <span style="font-size: 0.8rem; color: #64748b;">W:</span>
+                <input type="number" id="img-width" onchange="updateImageProp('width', this.value)">
+                <span style="font-size: 0.8rem; color: #64748b;">H:</span>
+                <input type="number" id="img-height" onchange="updateImageProp('height', this.value)">
+                <span style="font-size: 0.8rem; color: #64748b;"><i class="fa-solid fa-border-all"></i></span>
+                <input type="number" id="img-radius" value="0" placeholder="R" onchange="updateImageProp('radius', this.value)">
+            </div>
+
             <!-- Common Properties -->
             <div class="prop-group">
                 <input type="color" id="fill-color" onchange="updateActiveObject('fill', this.value)">
@@ -648,7 +659,7 @@
             if (state.undoStack.length > 50) state.undoStack.shift();
             
             // Don't serialize 'frameLabel' (runtime ref), use IDs instead
-            state.undoStack.push(JSON.stringify(canvas.toJSON(['id', 'textId', 'isFrame', 'deviceName', 'isSafeArea', 'linkedFrameId', 'folderId', 'customName'])));
+            state.undoStack.push(JSON.stringify(canvas.toJSON(['id', 'textId', 'isFrame', 'deviceName', 'isSafeArea', 'linkedFrameId', 'folderId', 'customName', 'borderRadius', 'uniformScaling', 'locked'])));
             state.redoStack = []; // Clear redo on new action
         }
 
@@ -904,7 +915,7 @@
                 currentLang: state.currentLang,
                 translations: state.translations,
                 folders: state.folders,
-                canvas: canvas.toJSON(['id', 'textId', 'isFrame', 'deviceName', 'isSafeArea', 'linkedFrameId', 'clippedByFrameId', 'folderId', 'customName'])
+                canvas: canvas.toJSON(['id', 'textId', 'isFrame', 'deviceName', 'isSafeArea', 'linkedFrameId', 'clippedByFrameId', 'folderId', 'customName', 'borderRadius', 'uniformScaling', 'locked'])
             };
 
             try {
@@ -976,6 +987,12 @@
                             }
                             // Cleanup old property if exists
                             delete obj.textId;
+
+                            // Apply locked state if preserved
+                            if (obj.locked) {
+                                obj.selectable = false;
+                                obj.evented = false;
+                            }
                         });
 
                         // Restore frame-label links using IDs
@@ -1052,8 +1069,35 @@
 
         // --- CLIPPING / MASKING LOGIC ---
         
+        function toggleObjectLock(obj) {
+            obj.locked = !obj.locked;
+            obj.selectable = !obj.locked;
+            obj.evented = !obj.locked;
+            obj.hoverCursor = obj.locked ? 'not-allowed' : 'move';
+            
+            canvas.discardActiveObject();
+            canvas.renderAll();
+            updateLayersPanel();
+            saveLocalState();
+        }
+
+        function toggleFolderLock(folder) {
+            folder.locked = !folder.locked;
+            // Lock all objects in this folder
+            canvas.getObjects().forEach(obj => {
+                if (obj.folderId === folder.id) {
+                    obj.locked = folder.locked;
+                    obj.selectable = !folder.locked;
+                    obj.evented = !folder.locked;
+                }
+            });
+            canvas.discardActiveObject();
+            canvas.renderAll();
+            updateLayersPanel();
+            saveLocalState();
+        }
+
         function checkForClipping(obj) {
-            // Only apply to images as requested, or extend to all if needed
             if (!obj || obj.isFrame || obj.type !== 'image') return;
 
             const center = obj.getCenterPoint();
@@ -1063,8 +1107,16 @@
             const targetFrame = frames.find(f => f.containsPoint(center));
             
             if (targetFrame) {
-                // Create a clone of the frame to serve as the clip mask
-                // We use absolutePositioned = true so it works in world coordinates
+                // If it's a new frame or not clipped yet
+                if (obj.clippedByFrameId !== targetFrame.id) {
+                    // Bring object above the frame to ensure visibility
+                    const frameIndex = canvas.getObjects().indexOf(targetFrame);
+                    const objIndex = canvas.getObjects().indexOf(obj);
+                    if (objIndex < frameIndex) {
+                        obj.moveTo(frameIndex + 1);
+                    }
+                }
+
                 const clipRect = new fabric.Rect({
                     left: targetFrame.left,
                     top: targetFrame.top,
@@ -1083,16 +1135,21 @@
                 obj.clipPath = clipRect;
                 obj.clippedByFrameId = targetFrame.id;
                 obj.dirty = true;
-                // showToast("Obraz przycięty do ramki");
             } else {
-                // Unclip if moved out
-                if (obj.clipPath) {
+                // Not over any frame - CLEAR clipping
+                if (obj.clippedByFrameId) {
                     obj.clipPath = null;
                     delete obj.clippedByFrameId;
+                    
+                    // Re-apply border radius if it existed
+                    if (obj.borderRadius > 0) {
+                        applyImageRadius(obj, obj.borderRadius);
+                    }
                     obj.dirty = true;
                 }
             }
             canvas.requestRenderAll();
+            updateLayersPanel();
         }
 
         function syncFrameClips(frame) {
@@ -1149,9 +1206,16 @@
         });
 
         canvas.on('object:scaling', function(e) {
-            e.target.isMoving = true;
+            const obj = e.target;
+            obj.isMoving = true;
             updateLayersPanel();
-            if (e.target.isFrame) {
+
+            if (obj.type === 'image') {
+                imgWidthInput.value = Math.round(obj.width * obj.scaleX);
+                imgHeightInput.value = Math.round(obj.height * obj.scaleY);
+            }
+
+            if (obj.isFrame) {
                 syncFrameClips(e.target);
                 updateSafeAreaPosition(e.target);
             }
@@ -1344,12 +1408,13 @@
             updateJSONEditor();
         }
 
-        // Add Frame (Rectangle representation for now)
+        // Add Frame
         function addFrame(type) {
             const config = FRAMES[type];
             if (!config) return;
 
-            const id = uuidv4();
+            const frameId = uuidv4();
+            const folderId = 'folder_' + uuidv4();
 
             const rect = new fabric.Rect({
                 left: (window.innerWidth / 2 - config.width / 4) - canvas.viewportTransform[4],
@@ -1359,13 +1424,14 @@
                 fill: '#ffffff',
                 stroke: '#cbd5e1',
                 strokeWidth: 2,
-                rx: 40, // Rounded Corners
+                rx: 40,
                 ry: 40,
                 shadow: '0 10px 20px rgba(0,0,0,0.1)',
                 objectCaching: false,
-                isFrame: true, // Custom flag
+                isFrame: true,
                 deviceName: config.name,
-                id: id
+                id: frameId,
+                folderId: folderId // Put frame inside its own folder
             });
             
             // Text Label for the frame
@@ -1377,22 +1443,32 @@
                 selectable: false,
                 evented: false,
                 excludeFromExport: true,
-                linkedFrameId: id
+                linkedFrameId: frameId
             });
 
-            // Link them
             rect.frameLabel = label;
 
-            // Scale down if huge (default view)
             if (config.width > 1000) {
                 rect.scale(0.5); 
                 label.set({ top: rect.top - 50 });
             }
 
+            // Create corresponding folder in state
+            state.folders.push({
+                id: folderId,
+                name: config.name,
+                collapsed: false,
+                isFolder: true,
+                isFrameFolder: true,
+                linkedFrameId: frameId
+            });
+
             canvas.add(rect);
             canvas.add(label);
             canvas.sendToBack(rect);
             canvas.renderAll();
+            updateLayersPanel();
+            saveLocalState();
         }
 
         // ... [Image Handling and Drop logic same as before] ...
@@ -1574,6 +1650,10 @@
 
         const frameProps = document.getElementById('frame-props');
         const cloneTargetSelect = document.getElementById('clone-target');
+        const imageProps = document.getElementById('image-props');
+        const imgWidthInput = document.getElementById('img-width');
+        const imgHeightInput = document.getElementById('img-height');
+        const imgRadiusInput = document.getElementById('img-radius');
 
         canvas.on('selection:created', (e) => {
             handleSelection(e);
@@ -1614,6 +1694,16 @@
                 frameProps.style.display = 'none';
             }
 
+            // Image Specific
+            if (obj.type === 'image') {
+                imageProps.style.display = 'flex';
+                imgWidthInput.value = Math.round(obj.width * obj.scaleX);
+                imgHeightInput.value = Math.round(obj.height * obj.scaleY);
+                imgRadiusInput.value = obj.borderRadius || 0;
+            } else {
+                imageProps.style.display = 'none';
+            }
+
             // Text Specific
             if (obj.type === 'textbox' || obj.type === 'text' || obj.type === 'i-text') {
                 textProps.style.display = 'flex';
@@ -1621,6 +1711,56 @@
                 fontFamilySelect.value = obj.fontFamily;
             } else {
                 textProps.style.display = 'none';
+            }
+        }
+
+        function updateImageProp(prop, value) {
+            const obj = canvas.getActiveObject();
+            if (!obj || obj.type !== 'image') return;
+
+            value = parseInt(value);
+            if (isNaN(value)) return;
+
+            if (prop === 'width') {
+                const newScaleX = value / obj.width;
+                if (obj.uniformScaling) {
+                    obj.scale(newScaleX);
+                    imgHeightInput.value = Math.round(obj.height * obj.scaleY);
+                } else {
+                    obj.set('scaleX', newScaleX);
+                }
+            } else if (prop === 'height') {
+                const newScaleY = value / obj.height;
+                if (obj.uniformScaling) {
+                    obj.scale(newScaleY);
+                    imgWidthInput.value = Math.round(obj.width * obj.scaleX);
+                } else {
+                    obj.set('scaleY', newScaleY);
+                }
+            } else if (prop === 'radius') {
+                obj.borderRadius = value;
+                applyImageRadius(obj, value);
+            }
+
+            obj.setCoords();
+            canvas.renderAll();
+            saveHistory();
+            saveLocalState();
+        }
+
+        function applyImageRadius(obj, radius) {
+            if (radius > 0) {
+                const clipPath = new fabric.Rect({
+                    width: obj.width,
+                    height: obj.height,
+                    rx: radius / obj.scaleX,
+                    ry: radius / obj.scaleY,
+                    originX: 'center',
+                    originY: 'center'
+                });
+                obj.set('clipPath', clipPath);
+            } else {
+                obj.set('clipPath', null);
             }
         }
 
@@ -2031,21 +2171,17 @@
                         <div class="layer-type">${type}</div>
                     </div>
                     <div class="layer-actions">
+                        <button class="layer-action-btn lock-btn ${obj.locked ? 'locked' : ''}" title="Zablokuj/Odblokuj">
+                            <i class="fa-solid ${obj.locked ? 'fa-lock' : 'fa-lock-open'} "></i>
+                        </button>
                         <button class="layer-action-btn rename-btn" title="Zmień nazwę">
                             <i class="fa-solid fa-pencil" style="font-size: 0.7rem;"></i>
                         </button>
                         <button class="layer-action-btn vis-btn ${!obj.visible ? 'hidden' : ''}" title="Widoczność">
-                            <i class="fa-solid ${obj.visible ? 'fa-eye' : 'fa-eye-slash'}"></i>
+                            <i class="fa-solid ${obj.visible ? 'fa-eye' : 'fa-eye-slash'} "></i>
                         </button>
                     </div>
                 `;
-
-                // Scroll active item into view if it was just selected or moved
-                if (activeObject === obj && !isNested) {
-                    setTimeout(() => {
-                        item.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-                    }, 10);
-                }
 
                 // Rename action
                 const renameBtn = item.querySelector('.rename-btn');
@@ -2058,6 +2194,10 @@
                         saveLocalState();
                     });
                 };
+
+                // Lock action
+                const lockBtn = item.querySelector('.lock-btn');
+                lockBtn.onclick = (e) => { e.stopPropagation(); toggleObjectLock(obj); };
 
                 // Drag Events for Layer Reordering and Folder Assignment
                 item.ondragstart = (e) => {
@@ -2110,19 +2250,30 @@
                 const fItem = document.createElement('div');
                 fItem.className = 'layer-item folder';
                 fItem.draggable = true; // Folders can also be reordered
+                const folderIcon = folder.isFrameFolder ? 'fa-mobile-screen-button' : 'fa-folder-open';
+                const folderColor = folder.isFrameFolder ? 'var(--primary-color)' : '#f59e0b';
+
                 fItem.innerHTML = `
                     <div class="folder-toggle" onclick="toggleFolder('${folder.id}', event)">
                         <i class="fa-solid ${folder.collapsed ? 'fa-caret-right' : 'fa-caret-down'}"></i>
                     </div>
-                    <i class="fa-solid fa-folder-open" style="color: #f59e0b;"></i>
+                    <i class="fa-solid ${folderIcon}" style="color: ${folderColor}; width: 20px; text-align: center;"></i>
                     <div class="layer-info">
                         <div class="layer-name">${folder.name}</div>
                     </div>
                     <div class="layer-actions">
+                        <button class="layer-action-btn lock-btn ${folder.locked ? 'locked' : ''}" title="Zablokuj grupę"><i class="fa-solid ${folder.locked ? 'fa-lock' : 'fa-lock-open'}"></i></button>
                         <button class="layer-action-btn rename-btn" title="Zmień nazwę"><i class="fa-solid fa-pencil" style="font-size: 0.7rem;"></i></button>
                         <button class="layer-action-btn" onclick="deleteFolder('${folder.id}', event)"><i class="fa-solid fa-trash"></i></button>
                     </div>
                 `;
+                
+                // Lock Folder
+                const lockBtn = fItem.querySelector('.lock-btn');
+                lockBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    toggleFolderLock(folder);
+                };
                 
                 // Rename Folder action
                 const renameBtn = fItem.querySelector('.rename-btn');
@@ -2226,13 +2377,34 @@
 
         function deleteFolder(id, event) {
             event.stopPropagation();
-            if (!confirm("Usunąć folder? Elementy zostaną wyciągnięte na zewnątrz.")) return;
+            const folder = state.folders.find(f => f.id === id);
+            if (!folder) return;
+
+            const isFrame = folder.isFrameFolder;
+            const confirmMsg = isFrame ? 
+                "Usunąć ten ekran wraz z zawartością? (Elementy wewnątrz zostaną wyciągnięte)" : 
+                "Usunąć folder? Elementy zostaną wyciągnięte na zewnątrz.";
+
+            if (!confirm(confirmMsg)) return;
             
-            canvas.getObjects().forEach(obj => {
+            const objects = canvas.getObjects();
+            
+            // If it's a frame folder, remove the physical frame and its label
+            if (isFrame && folder.linkedFrameId) {
+                const frameObj = objects.find(o => o.id === folder.linkedFrameId);
+                if (frameObj) {
+                    if (frameObj.frameLabel) canvas.remove(frameObj.frameLabel);
+                    if (frameObj.safeArea) canvas.remove(frameObj.safeArea);
+                    canvas.remove(frameObj);
+                }
+            }
+
+            objects.forEach(obj => {
                 if (obj.folderId === id) delete obj.folderId;
             });
             
             state.folders = state.folders.filter(f => f.id !== id);
+            canvas.renderAll();
             updateLayersPanel();
             saveLocalState();
         }
