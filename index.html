@@ -491,12 +491,77 @@
         });
 
         // Listen for canvas changes
-        canvas.on('object:added', saveHistory);
-        canvas.on('object:modified', saveHistory);
-        canvas.on('object:removed', saveHistory);
+        canvas.on('object:added', () => { saveHistory(); saveLocalState(); });
+        canvas.on('object:modified', () => { saveHistory(); saveLocalState(); });
+        canvas.on('object:removed', () => { saveHistory(); saveLocalState(); });
 
-        // Initial save
-        saveHistory();
+        // --- LOCAL STORAGE PERSISTENCE ---
+        const LOCAL_STORAGE_KEY = 'shotlingo_v1';
+
+        function saveLocalState() {
+            if (state.isProcessingHistory) return;
+
+            const dataToSave = {
+                version: '1.0',
+                currentLang: state.currentLang,
+                translations: state.translations,
+                canvas: canvas.toJSON(['textId', 'isFrame', 'deviceName', 'isSafeArea', 'frameLabel'])
+            };
+
+            try {
+                localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(dataToSave));
+                // Optional: console.log('Saved to local storage');
+            } catch (e) {
+                console.error('Failed to save to localStorage', e);
+                showToast('Błąd zapisu lokalnego (brak miejsca?)');
+            }
+        }
+
+        function loadLocalState() {
+            const savedData = localStorage.getItem(LOCAL_STORAGE_KEY);
+            if (!savedData) {
+                saveHistory(); // Initialize history if no save found
+                return;
+            }
+
+            try {
+                const parsed = JSON.parse(savedData);
+                
+                // Restore State
+                state.currentLang = parsed.currentLang || 'en-US';
+                state.translations = parsed.translations || state.translations;
+                
+                // Update UI for state
+                document.getElementById('lang-switcher').value = state.currentLang;
+                updateJSONEditor();
+
+                // Restore Canvas
+                if (parsed.canvas) {
+                    state.isProcessingHistory = true; // Prevent history/save loops during load
+                    canvas.loadFromJSON(parsed.canvas, function() {
+                        // Restore frame-label links after loading
+                        const objects = canvas.getObjects();
+                        objects.forEach(obj => {
+                            if (obj.isFrame && obj.deviceName) {
+                                // Find the corresponding label
+                                obj.frameLabel = objects.find(o => !o.selectable && o.text === obj.deviceName && o.top < obj.top);
+                            }
+                        });
+                        
+                        canvas.renderAll();
+                        state.isProcessingHistory = false;
+                        saveHistory(); // Save this as the first undo step
+                        showToast("Przywrócono sesję");
+                    });
+                }
+            } catch (e) {
+                console.error('Error loading state', e);
+                saveHistory();
+            }
+        }
+
+        // Initial load
+        loadLocalState();
 
         // --- GRID IMPLEMENTATION ---
         const gridSize = 50;
@@ -1148,6 +1213,7 @@
             canvas.renderAll();
             updateJSONEditor();
             showToast(`Język zmieniony na: ${lang}`);
+            saveLocalState();
         }
 
         // JSON Drawer Logic
