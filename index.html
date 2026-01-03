@@ -476,9 +476,15 @@
                 <button class="btn" onclick="setGeminiKey()" title="Ustaw klucz API Gemini">
                     <i class="fa-solid fa-key"></i>
                 </button>
-                <button class="btn" id="ai-translate-btn" onclick="translateWithGemini()" style="display:none; background: linear-gradient(135deg, #6366f1 0%, #a855f7 100%); color: white; border: none;">
-                    <i class="fa-solid fa-wand-magic-sparkles"></i> AI Translate
-                </button>
+                
+                <div id="ai-model-container" style="display:none; align-items:center; gap:5px;">
+                    <select id="gemini-model-select" class="lang-select" style="max-width: 150px;" onchange="saveGeminiModel(this.value)">
+                        <option value="gemini-1.5-flash">Gemini 1.5 Flash</option>
+                    </select>
+                    <button class="btn" id="ai-translate-btn" onclick="translateWithGemini()" style="background: linear-gradient(135deg, #6366f1 0%, #a855f7 100%); color: white; border: none;">
+                        <i class="fa-solid fa-wand-magic-sparkles"></i> AI Translate
+                    </button>
+                </div>
 
                 <div style="height: 24px; width: 1px; background: #e2e8f0; margin: 0 5px;"></div>
 
@@ -988,6 +994,7 @@
                 document.getElementById('lang-switcher').value = state.currentLang;
                 updateJSONEditor();
                 updateLayersPanel();
+                updateLangSwitcher();
 
                 // Restore Canvas
                 if (savedData.canvas) {
@@ -1453,7 +1460,7 @@
         function addText(initialText = "Nagłówek") {
             const id = uuidv4();
             const textObj = new fabric.Textbox(initialText, {
-                id: id, // Standardized to 'id'
+                id: id,
                 left: 100 - canvas.viewportTransform[4],
                 top: 100 - canvas.viewportTransform[5],
                 width: 300,
@@ -1463,11 +1470,9 @@
                 textAlign: 'center'
             });
 
-            // Add to translation state
-            state.translations[state.currentLang][id] = initialText;
-            // Pre-fill other languages with same text to avoid empty
+            // Add to translation state for ALL languages
             Object.keys(state.translations).forEach(lang => {
-                if(lang !== state.currentLang) state.translations[lang][id] = initialText;
+                state.translations[lang][id] = initialText;
             });
 
             canvas.add(textObj);
@@ -2014,19 +2019,36 @@
         }
 
         function deleteActive() {
-            const obj = canvas.getActiveObject();
-            if (obj) {
-                // If it's a frame with a label, remove label too
-                if (obj.isFrame && obj.frameLabel) {
-                    canvas.remove(obj.frameLabel);
+            const activeObj = canvas.getActiveObject();
+            if (!activeObj) return;
+
+            const objectsToDelete = activeObj.type === 'activeSelection' ? activeObj.getObjects() : [activeObj];
+
+            objectsToDelete.forEach(obj => {
+                // Remove from translations state if it's a text object
+                if (obj.id && (obj.type === 'textbox' || obj.type === 'text' || obj.type === 'i-text')) {
+                    Object.keys(state.translations).forEach(lang => {
+                        delete state.translations[lang][obj.id];
+                    });
                 }
 
-                // If text, remove from current translation? No, keep ID in case of undo/other langs.
-                // Or maybe warn user. For now, just remove visual.
+                // If it's a frame, remove its label and corresponding folder
+                if (obj.isFrame) {
+                    if (obj.frameLabel) canvas.remove(obj.frameLabel);
+                    if (obj.folderId) {
+                        state.folders = state.folders.filter(f => f.id !== obj.folderId);
+                    }
+                }
+
+                // Remove from canvas
                 canvas.remove(obj);
-                canvas.discardActiveObject();
-                canvas.renderAll();
-            }
+            });
+
+            canvas.discardActiveObject();
+            canvas.renderAll();
+            updateJSONEditor();
+            updateLayersPanel();
+            saveLocalState();
         }
 
         // --- 7. LOGIC: TRANSLATION SYSTEM ---
@@ -2034,10 +2056,12 @@
         // Listener for text editing on canvas
         canvas.on('text:changed', function(e) {
             const obj = e.target;
-            if (obj.textId) {
+            if (obj.id) {
                 // Update state
-                state.translations[state.currentLang][obj.textId] = obj.text;
+                state.translations[state.currentLang][obj.id] = obj.text;
                 updateJSONEditor();
+                saveHistory();
+                debouncedSave();
             }
         });
 
@@ -2053,8 +2077,11 @@
             // Iterate all objects and update text
             const objects = canvas.getObjects();
             objects.forEach(obj => {
-                if (obj.textId && state.translations[lang] && state.translations[lang][obj.textId]) {
-                    obj.set('text', state.translations[lang][obj.textId]);
+                if (obj.id) {
+                    const translation = state.translations[lang]?.[obj.id] || state.translations['en-US']?.[obj.id];
+                    if (translation !== undefined) {
+                        obj.set('text', translation);
+                    }
                 }
             });
             
@@ -2084,12 +2111,51 @@
         function applyJSON() {
             try {
                 const newData = JSON.parse(jsonEditor.value);
+                
+                // Dynamically learn languages from the new JSON
                 state.translations = newData;
+                updateLangSwitcher();
+                
                 // Re-apply text for current lang
                 switchLanguage(state.currentLang);
                 showToast("JSON załadowany pomyślnie");
+                saveLocalState(); // Save the new structure
             } catch (e) {
                 alert("Błąd JSON: " + e.message);
+            }
+        }
+
+        function updateLangSwitcher() {
+            const switcher = document.getElementById('lang-switcher');
+            const currentVal = switcher.value;
+            switcher.innerHTML = ''; // Clear existing options
+            
+            const languageCodes = Object.keys(state.translations);
+
+            // Add new options
+            languageCodes.forEach(code => {
+                const option = document.createElement('option');
+                option.value = code;
+                
+                // Simple flag emoji generator (may not cover all codes)
+                let flag = '🏳️';
+                try {
+                    if (code.includes('-')) {
+                        const countryCode = code.split('-')[1].toUpperCase();
+                        flag = countryCode.split('').map(char => String.fromCodePoint(char.charCodeAt(0) + 127397)).join('');
+                    }
+                } catch(e) { /* ignore emoji errors */ }
+                
+                option.textContent = `${flag} ${code}`;
+                switcher.appendChild(option);
+            });
+
+            // Restore selection
+            if (languageCodes.includes(currentVal)) {
+                switcher.value = currentVal;
+            } else if (languageCodes.length > 0) {
+                switcher.value = languageCodes[0];
+                switchLanguage(languageCodes[0]);
             }
         }
 
@@ -2749,17 +2815,69 @@
         });
 
         // --- 11. GEMINI AI TRANSLATION ---
-        let geminiApiKey = localStorage.getItem('Timo_gemini_key') || '';
+        let geminiApiKey = localStorage.getItem('timo_gemini_key') || '';
+        let currentGeminiModel = localStorage.getItem('timo_gemini_model') || 'gemini-1.5-flash';
 
         function checkGeminiAuth() {
-            const btn = document.getElementById('ai-translate-btn');
+            const container = document.getElementById('ai-model-container');
             if (geminiApiKey) {
-                btn.style.display = 'flex';
+                container.style.display = 'flex';
+                fetchGeminiModels();
             } else {
-                btn.style.display = 'none';
+                container.style.display = 'none';
             }
         }
         
+        async function fetchGeminiModels() {
+            const select = document.getElementById('gemini-model-select');
+            try {
+                // Fetch models from Google
+                const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${geminiApiKey}`);
+                const data = await response.json();
+                
+                if (data.models) {
+                    select.innerHTML = ''; // Clear defaults
+                    
+                    // Filter for models that support generateContent
+                    const capableModels = data.models.filter(m => 
+                        m.supportedGenerationMethods && 
+                        m.supportedGenerationMethods.includes('generateContent')
+                    );
+
+                    // Sort to put 'flash' and 'pro' at the top
+                    capableModels.sort((a, b) => {
+                        const nameA = a.name.toLowerCase();
+                        const nameB = b.name.toLowerCase();
+                        if (nameA.includes('flash') && !nameB.includes('flash')) return -1;
+                        if (nameA.includes('pro') && !nameB.includes('pro')) return -1;
+                        return 0;
+                    });
+
+                    capableModels.forEach(model => {
+                        const option = document.createElement('option');
+                        // Model name comes like "models/gemini-1.5-flash"
+                        const cleanName = model.name.replace('models/', '');
+                        option.value = cleanName;
+                        option.text = model.displayName || cleanName;
+                        select.appendChild(option);
+                    });
+
+                    // Restore selection or default
+                    if (currentGeminiModel) {
+                        select.value = currentGeminiModel;
+                    }
+                }
+            } catch (e) {
+                console.error("Failed to fetch models", e);
+                // Fallback: keep the default hardcoded option in HTML if fetch fails
+            }
+        }
+
+        function saveGeminiModel(model) {
+            currentGeminiModel = model;
+            localStorage.setItem('timo_gemini_model', model);
+        }
+
         // Init check
         setTimeout(checkGeminiAuth, 500);
 
@@ -2767,7 +2885,7 @@
             const newKey = prompt("Wprowadź swój klucz API Google Gemini:", geminiApiKey);
             if (newKey !== null) {
                 geminiApiKey = newKey;
-                localStorage.setItem('Timo_gemini_key', newKey);
+                localStorage.setItem('timo_gemini_key', newKey);
                 checkGeminiAuth();
                 showToast(newKey ? "Klucz zapisany" : "Klucz usunięty");
             }
@@ -2784,6 +2902,10 @@
             btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Tłumaczenie...';
             btn.disabled = true;
 
+            // Get selected model
+            const select = document.getElementById('gemini-model-select');
+            const modelName = select.value || 'gemini-1.5-flash';
+
             try {
                 // Prepare the prompt
                 const systemPrompt = `
@@ -2794,16 +2916,17 @@ The structure is: { "LanguageCode": { "ElementID": "TextString" } }.
 Your task:
 1. Analyze the 'en-US' (English) source texts.
 2. Translate these texts into ALL other target languages present in the JSON object (e.g., 'pl-PL', 'de-DE', 'fr-FR', etc.).
-3. Overwrite existing values in target languages with the new translations.
-4. Keep 'en-US' unchanged.
-5. STRICTLY preserve the JSON structure and keys (ElementIDs).
-6. Return ONLY the valid, raw JSON string. Do not use Markdown code blocks (like \`\`\`json). Do not add explanations.
+3. If an ElementID exists in 'en-US' but not in a target language, CREATE it in the target language and provide the translation.
+4. Overwrite existing values in target languages with the new translations.
+5. Keep 'en-US' unchanged.
+6. STRICTLY preserve the JSON structure and keys (ElementIDs).
+7. Return ONLY the valid, raw JSON string. Do not use Markdown code blocks (like \`\`\`json). Do not add explanations.
 
 Input JSON:
 ${JSON.stringify(state.translations)}
 `;
 
-                const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiApiKey}`, {
+                const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${geminiApiKey}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
