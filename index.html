@@ -483,12 +483,132 @@
 
         // Keyboard listeners
         window.addEventListener('keydown', function(e) {
-            // Ctrl + Z
+            // Ignore if focus is on an input/textarea
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+            // Ctrl + Z (Undo)
             if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
                 e.preventDefault();
                 undo();
             }
+
+            // Ctrl + C (Copy)
+            if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
+                e.preventDefault();
+                copy();
+            }
+
+            // Ctrl + V (Paste)
+            if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
+                e.preventDefault();
+                paste();
+            }
+
+            // Ctrl + A (Select All)
+            if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+                e.preventDefault();
+                canvas.discardActiveObject();
+                const sel = new fabric.ActiveSelection(canvas.getObjects().filter(o => !o.excludeFromExport), {
+                    canvas: canvas,
+                });
+                canvas.setActiveObject(sel);
+                canvas.requestRenderAll();
+            }
+            
+            // Delete / Backspace (Delete Active)
+            if (e.key === 'Delete' || e.key === 'Backspace') {
+                // Check if not editing text inside canvas
+                const active = canvas.getActiveObject();
+                if (active && !active.isEditing) {
+                    e.preventDefault();
+                    deleteActive();
+                }
+            }
         });
+
+        // --- COPY / PASTE ---
+        function copy() {
+            const activeObj = canvas.getActiveObject();
+            if (!activeObj) return;
+            
+            activeObj.clone(function(cloned) {
+                state.clipboard = cloned;
+                showToast("Skopiowano");
+            }, ['textId', 'isFrame', 'deviceName', 'isSafeArea', 'frameLabel', 'uniformScaling']);
+        }
+
+        function paste() {
+            if (!state.clipboard) return;
+            
+            state.clipboard.clone(function(clonedObj) {
+                canvas.discardActiveObject();
+                
+                clonedObj.set({
+                    left: clonedObj.left + 20,
+                    top: clonedObj.top + 20,
+                    evented: true,
+                });
+
+                if (clonedObj.type === 'activeSelection') {
+                    // Active selection needs a canvas reference
+                    clonedObj.canvas = canvas;
+                    clonedObj.forEachObject(function(obj) {
+                        canvas.add(obj);
+                        handlePastedObject(obj);
+                    });
+                    clonedObj.setCoords();
+                } else {
+                    canvas.add(clonedObj);
+                    handlePastedObject(clonedObj);
+                }
+                
+                // Fix: if we pasted a frame, we need to handle its label if it wasn't part of a group selection
+                // But since 'frameLabel' link is custom, standard clone won't deep copy the label instance unless we manually do it.
+                // For simplicity in this prototype, we might lose the label link or it points to original. 
+                // Let's rely on `handlePastedObject` to fix basic props.
+                
+                canvas.setActiveObject(clonedObj);
+                canvas.requestRenderAll();
+                saveHistory();
+                saveLocalState();
+                showToast("Wklejono");
+            }, ['textId', 'isFrame', 'deviceName', 'isSafeArea', 'frameLabel', 'uniformScaling']);
+        }
+
+        function handlePastedObject(obj) {
+            // 1. Handle Text IDs (New Instance = New ID)
+            if (obj.textId) {
+                const oldId = obj.textId;
+                const newId = uuidv4();
+                obj.textId = newId;
+                
+                // Copy translation entries for all languages
+                Object.keys(state.translations).forEach(lang => {
+                    const text = state.translations[lang][oldId] || "";
+                    state.translations[lang][newId] = text;
+                });
+            }
+
+            // 2. Handle Frames (need new labels)
+            if (obj.isFrame && obj.deviceName) {
+                // The cloned object might have a reference to the OLD label in 'frameLabel' prop (shallow copy of reference)
+                // We need to create a NEW label for this new frame.
+                
+                const newLabel = new fabric.Text(obj.deviceName, {
+                    left: obj.left,
+                    top: obj.top - 50,
+                    fontSize: 30,
+                    fill: '#64748b',
+                    selectable: false,
+                    evented: false,
+                    excludeFromExport: true
+                });
+                
+                obj.frameLabel = newLabel;
+                canvas.add(newLabel);
+                canvas.sendToBack(obj); // Ensure frame is behind
+            }
+        }
 
         // Listen for canvas changes
         canvas.on('object:added', () => { saveHistory(); saveLocalState(); });
@@ -1097,6 +1217,8 @@
             if (obj) {
                 obj.set(prop, value);
                 canvas.requestRenderAll();
+                saveHistory();
+                saveLocalState();
             }
         }
 
@@ -1112,6 +1234,8 @@
             });
             canvas.renderAll();
             showToast(`Zaktualizowano tło dla ${count} ekranów`);
+            saveHistory();
+            saveLocalState();
         }
 
         // Aspect Ratio Toggle
