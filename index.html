@@ -57,6 +57,12 @@
             pointer-events: auto;
         }
 
+        .ui-faded {
+            opacity: 0.2;
+            pointer-events: none;
+            transition: opacity 0.3s;
+        }
+
         /* Top Bar */
         .top-bar {
             position: absolute;
@@ -72,6 +78,7 @@
             padding: 0 20px;
             box-shadow: var(--shadow);
             z-index: 100;
+            transition: opacity 0.3s;
         }
 
         .logo { font-weight: bold; font-size: 1.2rem; color: var(--primary-color); display: flex; align-items: center; gap: 10px; }
@@ -109,6 +116,7 @@
             padding: 10px;
             gap: 10px;
             z-index: 90;
+            transition: opacity 0.3s;
         }
 
         .tool-btn {
@@ -413,7 +421,10 @@
                 'es-ES': {}
             },
             canvasBg: '#f0f0f0',
-            clipboard: null
+            clipboard: null,
+            undoStack: [],
+            redoStack: [],
+            isProcessingHistory: false
         };
 
         // --- 2. CONFIGURATION ---
@@ -429,10 +440,63 @@
         // --- 3. CANVAS SETUP ---
         const canvas = new fabric.Canvas('c', {
             backgroundColor: '#f1f5f9',
-            preserveObjectStacking: true, // Needed for correct layer management
+            preserveObjectStacking: true,
             selection: true,
-            uniformScaling: true // Default to proportional scaling
+            uniformScaling: true
         });
+
+        // --- HISTORY (UNDO/REDO) ---
+        function saveHistory() {
+            if (state.isProcessingHistory) return;
+            
+            // Limit stack size to 50 for performance
+            if (state.undoStack.length > 50) state.undoStack.shift();
+            
+            state.undoStack.push(JSON.stringify(canvas.toJSON(['textId', 'isFrame', 'deviceName', 'isSafeArea', 'frameLabel'])));
+            state.redoStack = []; // Clear redo on new action
+        }
+
+        function undo() {
+            if (state.undoStack.length <= 1) return; // Keep initial state
+            
+            state.isProcessingHistory = true;
+            const currentState = state.undoStack.pop();
+            state.redoStack.push(currentState);
+            
+            const prevState = state.undoStack[state.undoStack.length - 1];
+            
+            canvas.loadFromJSON(prevState, function() {
+                // Restore frame-label links after loading
+                const objects = canvas.getObjects();
+                objects.forEach(obj => {
+                    if (obj.isFrame && obj.deviceName) {
+                        // Find the corresponding label (it's not linked in JSON)
+                        obj.frameLabel = objects.find(o => !o.selectable && o.text === obj.deviceName && o.top < obj.top);
+                    }
+                });
+                
+                canvas.renderAll();
+                state.isProcessingHistory = false;
+                showToast("Cofnięto zmianę");
+            });
+        }
+
+        // Keyboard listeners
+        window.addEventListener('keydown', function(e) {
+            // Ctrl + Z
+            if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+                e.preventDefault();
+                undo();
+            }
+        });
+
+        // Listen for canvas changes
+        canvas.on('object:added', saveHistory);
+        canvas.on('object:modified', saveHistory);
+        canvas.on('object:removed', saveHistory);
+
+        // Initial save
+        saveHistory();
 
         // --- GRID IMPLEMENTATION ---
         const gridSize = 50;
@@ -490,8 +554,13 @@
                 obj.top = Math.round(obj.top / gridSize) * gridSize;
             }
             
-            // Advanced: Snap to other objects (center/edges) could be added here
-            // For now, grid snapping provides good alignment.
+            // Move Linked Label (if Frame)
+            if (obj.isFrame && obj.frameLabel) {
+                obj.frameLabel.set({
+                    left: obj.left,
+                    top: obj.top - 50 // Keep relative offset
+                });
+            }
         });
 
         // Resize handling
@@ -680,15 +749,21 @@
             // Text Label for the frame
             const label = new fabric.Text(config.name, {
                 left: rect.left,
-                top: rect.top - 40,
+                top: rect.top - 50,
                 fontSize: 30,
                 fill: '#64748b',
-                selectable: false
+                selectable: false,
+                evented: false,
+                excludeFromExport: true
             });
+
+            // Link them
+            rect.frameLabel = label;
 
             // Scale down if huge (default view)
             if (config.width > 1000) {
                 rect.scale(0.5); 
+                label.set({ top: rect.top - 50 });
             }
 
             canvas.add(rect);
@@ -1028,6 +1103,11 @@
         function deleteActive() {
             const obj = canvas.getActiveObject();
             if (obj) {
+                // If it's a frame with a label, remove label too
+                if (obj.isFrame && obj.frameLabel) {
+                    canvas.remove(obj.frameLabel);
+                }
+
                 // If text, remove from current translation? No, keep ID in case of undo/other langs.
                 // Or maybe warn user. For now, just remove visual.
                 canvas.remove(obj);
