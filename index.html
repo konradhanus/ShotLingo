@@ -264,6 +264,114 @@
             pointer-events: auto;
         }
 
+        /* Layers Panel */
+        .layers-panel {
+            position: absolute;
+            right: 20px;
+            top: 80px;
+            width: 240px;
+            max-height: calc(100% - 280px); /* Avoid overlapping with minimap */
+            background: var(--bg-panel);
+            backdrop-filter: blur(10px);
+            border-radius: var(--border-radius);
+            box-shadow: var(--shadow);
+            z-index: 90;
+            display: flex;
+            flex-direction: column;
+            transition: opacity 0.3s;
+            overflow: hidden;
+        }
+
+        .layers-header {
+            padding: 12px 15px;
+            background: rgba(241, 245, 249, 0.5);
+            border-bottom: 1px solid #e2e8f0;
+            font-weight: bold;
+            font-size: 0.85rem;
+            color: var(--text-main);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .layers-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 5px 0;
+        }
+
+        .layer-item {
+            padding: 8px 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            cursor: grab;
+            transition: background 0.2s, transform 0.1s;
+            border-bottom: 1px solid #f1f5f9;
+            background: white;
+            user-select: none;
+        }
+
+        .layer-item:active { cursor: grabbing; }
+        .layer-item.dragging { opacity: 0.5; background: #e2e8f0; transform: scale(0.98); }
+        .layer-item.drag-over { border-top: 2px solid var(--primary-color); }
+        
+        .layer-item.folder { background: #f8fafc; font-weight: 600; }
+        .layer-item.nested { padding-left: 35px; }
+
+        .folder-toggle {
+            width: 20px;
+            height: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            color: #64748b;
+        }
+        
+        .folder-toggle:hover { color: var(--primary-color); }
+
+        .layer-info { flex: 1; min-width: 0; }
+        .layer-name { font-size: 0.8rem; font-weight: 500; color: #334155; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .layer-type { font-size: 0.65rem; color: #94a3b8; text-transform: uppercase; }
+
+        .layer-actions { display: flex; gap: 5px; }
+        .layer-action-btn {
+            width: 24px;
+            height: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border: none;
+            background: transparent;
+            color: #94a3b8;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+        .layer-action-btn:hover { background: #cbd5e1; color: #334155; }
+        .layer-action-btn.hidden { color: #cbd5e1; }
+
+        /* Layers Folder Controls */
+        .layers-controls {
+            padding: 8px 15px;
+            border-bottom: 1px solid #e2e8f0;
+            display: flex;
+            gap: 10px;
+            background: #fff;
+        }
+        
+        .btn-icon-sm {
+            padding: 4px 8px;
+            font-size: 0.8rem;
+            background: #f1f5f9;
+            border: 1px solid #e2e8f0;
+            border-radius: 4px;
+            cursor: pointer;
+            color: #64748b;
+        }
+        
+        .btn-icon-sm:hover { background: #e2e8f0; color: var(--primary-color); }
+
         /* Minimap */
         #minimap-container {
             position: absolute;
@@ -433,6 +541,22 @@
                 <textarea id="json-editor" class="json-editor"></textarea>
             </div>
         </div>
+
+        <!-- Layers Panel -->
+        <div class="layers-panel pointer-events-auto" id="layers-panel">
+            <div class="layers-header">
+                <span>WARSTWY</span>
+                <div style="display: flex; gap: 5px;">
+                    <button class="btn-icon-sm" onclick="createNewFolder()" title="Nowy Folder">
+                        <i class="fa-solid fa-folder-plus"></i>
+                    </button>
+                    <i class="fa-solid fa-layer-group" style="opacity: 0.5; margin-left: 5px;"></i>
+                </div>
+            </div>
+            <div class="layers-list" id="layers-list">
+                <!-- Layers will be injected here -->
+            </div>
+        </div>
         
         <!-- Minimap -->
         <div id="minimap-container" class="pointer-events-auto">
@@ -498,7 +622,7 @@
             if (state.undoStack.length > 50) state.undoStack.shift();
             
             // Don't serialize 'frameLabel' (runtime ref), use IDs instead
-            state.undoStack.push(JSON.stringify(canvas.toJSON(['id', 'textId', 'isFrame', 'deviceName', 'isSafeArea', 'linkedFrameId'])));
+            state.undoStack.push(JSON.stringify(canvas.toJSON(['id', 'textId', 'isFrame', 'deviceName', 'isSafeArea', 'linkedFrameId', 'folderId'])));
             state.redoStack = []; // Clear redo on new action
         }
 
@@ -707,10 +831,26 @@
         }
 
         // Listen for canvas changes
-        canvas.on('object:added', () => { saveHistory(); debouncedSave(); });
-        canvas.on('object:modified', () => { saveHistory(); debouncedSave(); });
-        canvas.on('object:removed', () => { saveHistory(); debouncedSave(); });
-        canvas.on('text:changed', () => { saveHistory(); debouncedSave(); }); // Ensure text changes trigger save
+        canvas.on('object:added', () => { 
+            saveHistory(); 
+            debouncedSave(); 
+            if (typeof updateLayersPanel === 'function') updateLayersPanel(); 
+        });
+        canvas.on('object:modified', () => { 
+            saveHistory(); 
+            debouncedSave(); 
+            if (typeof updateLayersPanel === 'function') updateLayersPanel(); 
+        });
+        canvas.on('object:removed', () => { 
+            saveHistory(); 
+            debouncedSave(); 
+            if (typeof updateLayersPanel === 'function') updateLayersPanel(); 
+        });
+        canvas.on('text:changed', () => { 
+            saveHistory(); 
+            debouncedSave(); 
+            if (typeof updateLayersPanel === 'function') updateLayersPanel(); 
+        });
 
         // --- LOCAL STORAGE PERSISTENCE (UPGRADED TO INDEXEDDB WITH LOCALSTORAGE FALLBACK) ---
         const LOCAL_STORAGE_KEY = 'timo_v1_db';
@@ -735,7 +875,8 @@
                 version: '1.2',
                 currentLang: state.currentLang,
                 translations: state.translations,
-                canvas: canvas.toJSON(['id', 'textId', 'isFrame', 'deviceName', 'isSafeArea', 'linkedFrameId', 'clippedByFrameId'])
+                folders: state.folders,
+                canvas: canvas.toJSON(['id', 'textId', 'isFrame', 'deviceName', 'isSafeArea', 'linkedFrameId', 'clippedByFrameId', 'folderId'])
             };
 
             try {
@@ -787,10 +928,12 @@
                 // Restore State
                 state.currentLang = savedData.currentLang || 'en-US';
                 state.translations = savedData.translations || state.translations;
+                state.folders = savedData.folders || [];
                 
                 // Update UI for state
                 document.getElementById('lang-switcher').value = state.currentLang;
                 updateJSONEditor();
+                updateLayersPanel();
 
                 // Restore Canvas
                 if (savedData.canvas) {
@@ -1368,10 +1511,17 @@
         const frameProps = document.getElementById('frame-props');
         const cloneTargetSelect = document.getElementById('clone-target');
 
-        canvas.on('selection:created', handleSelection);
-        canvas.on('selection:updated', handleSelection);
+        canvas.on('selection:created', (e) => {
+            handleSelection(e);
+            if (typeof updateLayersPanel === 'function') updateLayersPanel();
+        });
+        canvas.on('selection:updated', (e) => {
+            handleSelection(e);
+            if (typeof updateLayersPanel === 'function') updateLayersPanel();
+        });
         canvas.on('selection:cleared', () => {
             propBar.classList.remove('visible');
+            if (typeof updateLayersPanel === 'function') updateLayersPanel();
         });
 
         function handleSelection(e) {
@@ -1751,7 +1901,223 @@
         // Initial call
         updateJSONEditor();
 
-        // --- 9. MINIMAP LOGIC ---
+        // --- 9. LAYERS PANEL LOGIC ---
+        state.folders = []; // Store folder metadata {id, name, collapsed}
+        let draggedLayerId = null;
+
+        function createNewFolder() {
+            const folderName = prompt("Nazwa folderu:", "Nowa grupa");
+            if (!folderName) return;
+            
+            const folder = {
+                id: 'folder_' + uuidv4(),
+                name: folderName,
+                collapsed: false,
+                isFolder: true
+            };
+            
+            state.folders.push(folder);
+            updateLayersPanel();
+            saveLocalState();
+        }
+
+        function updateLayersPanel() {
+            const layersList = document.getElementById('layers-list');
+            if (!layersList) return;
+
+            // 1. Get all objects and map them to their folders
+            const allObjects = canvas.getObjects().filter(obj => 
+                !obj.excludeFromExport && !obj.isSafeArea && !(obj.linkedFrameId && !obj.isFrame)
+            );
+            
+            // Fabric index 0 is BOTTOM. We want TOP objects at the top of our list.
+            // So we reverse for the UI.
+            const objects = allObjects.slice().reverse();
+            const activeObject = canvas.getActiveObject();
+            
+            layersList.innerHTML = '';
+
+            // Helper to render an item
+            const renderItem = (obj, isNested = false) => {
+                const item = document.createElement('div');
+                item.className = `layer-item ${activeObject === obj ? 'active' : ''} ${isNested ? 'nested' : ''}`;
+                item.draggable = true;
+                item.dataset.id = obj.id || obj.textId || 'temp';
+                
+                let icon = 'fa-shapes';
+                let name = 'Element';
+                let type = obj.type;
+
+                if (obj.isFrame) {
+                    icon = 'fa-mobile-screen';
+                    name = obj.deviceName || 'Ekran';
+                    type = 'Frame';
+                } else if (obj.type === 'textbox' || obj.type === 'text' || obj.type === 'i-text') {
+                    icon = 'fa-font';
+                    name = obj.text ? (obj.text.substring(0, 15) + (obj.text.length > 15 ? '...' : '')) : 'Tekst';
+                } else if (obj.type === 'image') {
+                    icon = 'fa-image';
+                    name = 'Obraz';
+                }
+
+                item.innerHTML = `
+                    <i class="fa-solid ${icon}" style="width: 20px; text-align: center; color: #64748b;"></i>
+                    <div class="layer-info">
+                        <div class="layer-name">${name}</div>
+                        <div class="layer-type">${type}</div>
+                    </div>
+                    <div class="layer-actions">
+                        <button class="layer-action-btn ${!obj.visible ? 'hidden' : ''}" title="Widoczność">
+                            <i class="fa-solid ${obj.visible ? 'fa-eye' : 'fa-eye-slash'}"></i>
+                        </button>
+                    </div>
+                `;
+
+                // Drag Events
+                item.ondragstart = (e) => {
+                    draggedLayerId = obj.id || obj.textId;
+                    item.classList.add('dragging');
+                    e.dataTransfer.setData('text/plain', draggedLayerId);
+                };
+                item.ondragend = () => {
+                    item.classList.remove('dragging');
+                    document.querySelectorAll('.layer-item').forEach(el => el.classList.remove('drag-over'));
+                };
+                item.ondragover = (e) => {
+                    e.preventDefault();
+                    item.classList.add('drag-over');
+                };
+                item.ondragleave = () => item.classList.remove('drag-over');
+                item.ondrop = (e) => {
+                    e.preventDefault();
+                    handleLayerDrop(draggedLayerId, obj);
+                };
+
+                // Actions
+                const visBtn = item.querySelector('.layer-action-btn');
+                visBtn.onclick = (e) => { e.stopPropagation(); toggleLayerVisibility(obj); };
+                item.onclick = () => { canvas.setActiveObject(obj); canvas.renderAll(); updateLayersPanel(); };
+
+                return item;
+            };
+
+            // Render Hierarchy
+            // First, render objects without folders (or folders themselves)
+            // For this prototype, we'll keep it simple: Folders are top-level, objects can be in folders.
+            
+            state.folders.forEach(folder => {
+                const fItem = document.createElement('div');
+                fItem.className = 'layer-item folder';
+                fItem.innerHTML = `
+                    <div class="folder-toggle" onclick="toggleFolder('${folder.id}', event)">
+                        <i class="fa-solid ${folder.collapsed ? 'fa-caret-right' : 'fa-caret-down'}"></i>
+                    </div>
+                    <i class="fa-solid fa-folder-open" style="color: #f59e0b;"></i>
+                    <div class="layer-info">
+                        <div class="layer-name">${folder.name}</div>
+                    </div>
+                    <div class="layer-actions">
+                        <button class="layer-action-btn" onclick="deleteFolder('${folder.id}', event)"><i class="fa-solid fa-trash"></i></button>
+                    </div>
+                `;
+                
+                fItem.ondragover = (e) => { e.preventDefault(); fItem.classList.add('drag-over'); };
+                fItem.ondragleave = () => fItem.classList.remove('drag-over');
+                fItem.ondrop = (e) => {
+                    e.preventDefault();
+                    assignToFolder(draggedLayerId, folder.id);
+                };
+
+                layersList.appendChild(fItem);
+
+                if (!folder.collapsed) {
+                    objects.filter(o => o.folderId === folder.id).forEach(obj => {
+                        layersList.appendChild(renderItem(obj, true));
+                    });
+                }
+            });
+
+            // Render objects not in any folder
+            objects.filter(o => !o.folderId).forEach(obj => {
+                layersList.appendChild(renderItem(obj));
+            });
+            
+            if (objects.length === 0 && state.folders.length === 0) {
+                layersList.innerHTML = '<div style="padding: 20px; text-align: center; color: #94a3b8; font-size: 0.8rem;">Brak warstw</div>';
+            }
+        }
+
+        function toggleFolder(id, event) {
+            event.stopPropagation();
+            const folder = state.folders.find(f => f.id === id);
+            if (folder) {
+                folder.collapsed = !folder.collapsed;
+                updateLayersPanel();
+            }
+        }
+
+        function deleteFolder(id, event) {
+            event.stopPropagation();
+            if (!confirm("Usunąć folder? Elementy zostaną wyciągnięte na zewnątrz.")) return;
+            
+            canvas.getObjects().forEach(obj => {
+                if (obj.folderId === id) delete obj.folderId;
+            });
+            
+            state.folders = state.folders.filter(f => f.id !== id);
+            updateLayersPanel();
+            saveLocalState();
+        }
+
+        function assignToFolder(objId, folderId) {
+            const obj = canvas.getObjects().find(o => (o.id || o.textId) === objId);
+            if (obj) {
+                obj.folderId = folderId;
+                updateLayersPanel();
+                saveLocalState();
+            }
+        }
+
+        function handleLayerDrop(draggedId, targetObj) {
+            const objects = canvas.getObjects();
+            const draggedObj = objects.find(o => (o.id || o.textId) === draggedId);
+            
+            if (!draggedObj || draggedObj === targetObj) return;
+
+            // Reordering logic
+            // Fabric.js: 0 is bottom.
+            // UI: top of list is top of canvas.
+            
+            const targetIndex = canvas.getObjects().indexOf(targetObj);
+            
+            // Move object to new index
+            draggedObj.moveTo(targetIndex);
+            
+            // Also inherit folder if target is in folder
+            draggedObj.folderId = targetObj.folderId;
+
+            canvas.renderAll();
+            updateLayersPanel();
+            saveHistory();
+            saveLocalState();
+        }
+
+        function toggleLayerVisibility(obj) {
+            if (!obj) return;
+            obj.visible = !obj.visible;
+            if (obj.isFrame) {
+                if (obj.frameLabel) obj.frameLabel.visible = obj.visible;
+                if (obj.safeArea) obj.safeArea.visible = obj.visible;
+            }
+            canvas.renderAll();
+            updateLayersPanel();
+            saveLocalState();
+        }
+
+        // Initialize layers panel
+        setTimeout(updateLayersPanel, 500);
+
+        // --- 10. MINIMAP LOGIC ---
         const minimapCanvas = document.getElementById('minimap');
         const minimapCtx = minimapCanvas.getContext('2d');
         const minimapContainer = document.getElementById('minimap-container');
