@@ -699,7 +699,7 @@
                 translations: state.translations,
                 // Removed 'frameLabel' from toJSON to avoid circular refs/duplication. 
                 // We rely on 'linkedFrameId' and 'id' to restore links.
-                canvas: canvas.toJSON(['id', 'textId', 'isFrame', 'deviceName', 'isSafeArea', 'linkedFrameId'])
+                canvas: canvas.toJSON(['id', 'textId', 'isFrame', 'deviceName', 'isSafeArea', 'linkedFrameId', 'clippedByFrameId'])
             };
 
             try {
@@ -736,6 +736,14 @@
                     state.isProcessingHistory = true;
                     canvas.loadFromJSON(savedData.canvas, function() {
                         const objects = canvas.getObjects();
+                        
+                        // HEALING: Ensure all frames have IDs (for old saves)
+                        objects.forEach(obj => {
+                            if (obj.isFrame && !obj.id) {
+                                obj.id = uuidv4();
+                            }
+                        });
+
                         // Restore frame-label links using IDs
                         const frames = objects.filter(o => o.isFrame);
                         const linkedObjects = objects.filter(o => o.linkedFrameId);
@@ -850,6 +858,7 @@
                     obj.dirty = true;
                 }
             }
+            canvas.requestRenderAll();
         }
 
         function syncFrameClips(frame) {
@@ -1006,14 +1015,18 @@
             var evt = opt.e;
             // Alt Key, Pan Tool active, OR Middle Mouse Button (button === 1)
             if (evt.altKey || document.getElementById('pan-tool').classList.contains('active') || evt.button === 1) {
+                // Prevent default middle click scrolling/behavior
                 if (evt.button === 1) {
                     evt.preventDefault();
                     evt.stopPropagation();
                 }
+                
                 this.isDragging = true;
                 this.selection = false;
                 this.lastPosX = evt.clientX;
                 this.lastPosY = evt.clientY;
+                this.defaultCursor = 'grabbing';
+                this.setCursor('grabbing');
             }
         });
 
@@ -1034,6 +1047,12 @@
             this.isDragging = false;
             this.selection = true;
             
+            // Reset cursor if pan tool is not active
+            if (!document.getElementById('pan-tool').classList.contains('active')) {
+                this.defaultCursor = 'default';
+                this.setCursor('default');
+            }
+
             // Check for clipping on drop
             if (opt.target) checkForClipping(opt.target);
         });
@@ -1657,7 +1676,6 @@
         const minimapCtx = minimapCanvas.getContext('2d');
         const minimapContainer = document.getElementById('minimap-container');
         
-        // Resize minimap canvas to match container pixel ratio
         function resizeMinimap() {
              const rect = minimapContainer.getBoundingClientRect();
              minimapCanvas.width = rect.width;
@@ -1674,75 +1692,68 @@
 
             // Clear
             minimapCtx.clearRect(0, 0, width, height);
+            minimapCtx.fillStyle = '#f8fafc'; // Background
+            minimapCtx.fillRect(0,0, width, height);
 
-            // Get all objects bounds
-            const objects = canvas.getObjects();
-            if (objects.length === 0) return;
+            const objects = canvas.getObjects().filter(o => !o.excludeFromExport && !o.isSafeArea); // Filter clutter
             
-            // Calculate World Bounds (all objects)
-            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            // Calculate World Bounds
+            // Default to current viewport if empty
+            let minX = 0, minY = 0, maxX = canvas.width, maxY = canvas.height;
             
-            // Helper to expand bounds
-            const expandBounds = (p) => {
-                if (p.x < minX) minX = p.x;
-                if (p.y < minY) minY = p.y;
-                if (p.x > maxX) maxX = p.x;
-                if (p.y > maxY) maxY = p.y;
-            };
+            if (objects.length > 0) {
+                minX = Infinity; minY = Infinity; maxX = -Infinity; maxY = -Infinity;
+                objects.forEach(obj => {
+                    const coords = obj.getCoords();
+                    coords.forEach(p => {
+                        if (p.x < minX) minX = p.x;
+                        if (p.y < minY) minY = p.y;
+                        if (p.x > maxX) maxX = p.x;
+                        if (p.y > maxY) maxY = p.y;
+                    });
+                });
+                // Add padding
+                const padding = 1000; 
+                minX -= padding;
+                minY -= padding;
+                maxX += padding;
+                maxY += padding;
+            }
 
-            objects.forEach(obj => {
-                if (obj.excludeFromExport) return; 
-                // getCoords returns the 4 corners of the object in absolute scene coordinates
-                const coords = obj.getCoords();
-                coords.forEach(expandBounds);
-            });
-            
-            // If no valid objects found (e.g. all excluded), return
-            if (minX === Infinity) return;
-
-            // Add padding to world bounds
-            const padding = 200;
-            minX -= padding;
-            minY -= padding;
-            maxX += padding;
-            maxY += padding;
-            
             const worldWidth = maxX - minX;
             const worldHeight = maxY - minY;
-            
+
             // Calculate Scale to fit world in minimap
+            // Maintain aspect ratio
             const scaleX = width / worldWidth;
             const scaleY = height / worldHeight;
             const minimapScale = Math.min(scaleX, scaleY);
             
-            // Center the world in minimap
+            // Centering offsets
             const renderWidth = worldWidth * minimapScale;
             const renderHeight = worldHeight * minimapScale;
             const offsetX = (width - renderWidth) / 2;
             const offsetY = (height - renderHeight) / 2;
 
+            // Save transform data
+            minimapCanvas.dataset.scale = minimapScale;
+            minimapCanvas.dataset.minX = minX;
+            minimapCanvas.dataset.minY = minY;
+            minimapCanvas.dataset.offsetX = offsetX;
+            minimapCanvas.dataset.offsetY = offsetY;
+
             // Draw Objects
             minimapCtx.fillStyle = '#cbd5e1';
             objects.forEach(obj => {
-                if (obj.excludeFromExport) return;
+                // Approximate rect
+                const br = obj.getBoundingRect();
                 
-                // Calculate AABB for the object from its coords for simple rect drawing
-                // Or draw polygon for precision (simpler to draw rects for minimap usually)
-                const coords = obj.getCoords();
-                let objMinX = Infinity, objMinY = Infinity, objMaxX = -Infinity, objMaxY = -Infinity;
-                coords.forEach(p => {
-                    if (p.x < objMinX) objMinX = p.x;
-                    if (p.y < objMinY) objMinY = p.y;
-                    if (p.x > objMaxX) objMaxX = p.x;
-                    if (p.y > objMaxY) objMaxY = p.y;
-                });
-
-                // Map to minimap coords
-                const x = offsetX + (objMinX - minX) * minimapScale;
-                const y = offsetY + (objMinY - minY) * minimapScale;
-                const w = (objMaxX - objMinX) * minimapScale;
-                const h = (objMaxY - objMinY) * minimapScale;
+                const x = offsetX + (br.left - minX) * minimapScale;
+                const y = offsetY + (br.top - minY) * minimapScale;
+                const w = br.width * minimapScale;
+                const h = br.height * minimapScale;
                 
+                minimapCtx.fillStyle = obj.isFrame ? '#94a3b8' : '#cbd5e1';
                 minimapCtx.fillRect(x, y, w, h);
             });
             
@@ -1750,13 +1761,12 @@
             const vpt = canvas.viewportTransform;
             const zoom = canvas.getZoom();
             
-            // Viewport in world coords
-            const viewX = (-vpt[4] / zoom);
-            const viewY = (-vpt[5] / zoom);
+            // Visible area in world coords
+            const viewX = -vpt[4] / zoom;
+            const viewY = -vpt[5] / zoom;
             const viewW = canvas.width / zoom;
             const viewH = canvas.height / zoom;
             
-            // Map viewport to minimap
             const mapVx = offsetX + (viewX - minX) * minimapScale;
             const mapVy = offsetY + (viewY - minY) * minimapScale;
             const mapVw = viewW * minimapScale;
@@ -1765,16 +1775,16 @@
             minimapCtx.strokeStyle = '#3b82f6';
             minimapCtx.lineWidth = 2;
             minimapCtx.strokeRect(mapVx, mapVy, mapVw, mapVh);
-
-            // Store transform data for interaction
-            minimapCanvas.dataset.scale = minimapScale;
-            minimapCanvas.dataset.minX = minX;
-            minimapCanvas.dataset.minY = minY;
-            minimapCanvas.dataset.offsetX = offsetX;
-            minimapCanvas.dataset.offsetY = offsetY;
+            
+            // Semi-transparent overlay for outside viewport area
+            minimapCtx.fillStyle = 'rgba(0,0,0,0.1)';
+            minimapCtx.beginPath();
+            minimapCtx.rect(0, 0, width, height);
+            // Cut out the viewport
+            minimapCtx.rect(mapVx, mapVy, mapVw, mapVh);
+            minimapCtx.fill('evenodd');
         }
         
-        // Hook into canvas rendering
         canvas.on('after:render', updateMinimap);
         
         // Minimap Interaction
@@ -1788,29 +1798,20 @@
             const offsetY = parseFloat(minimapCanvas.dataset.offsetY);
             
             if (!scale) return;
-            
-            // Reverse mapping: Minimap Coord -> World Coord
-            // mx = offsetX + (worldX - minX) * scale
-            // worldX = ((mx - offsetX) / scale) + minX
-            
+
+            // Target World Center
             const worldX = ((mx - offsetX) / scale) + minX;
             const worldY = ((my - offsetY) / scale) + minY;
             
-            // We want worldX, worldY to be the CENTER of the screen
-            // canvas.zoomToPoint is not enough, we need absolutePan logic or viewport transform
-            // center of canvas screen is (width/2, height/2)
-            
             const zoom = canvas.getZoom();
             
-            // Calculate new vpt[4] (translateX) and vpt[5] (translateY)
-            // Center of screen corresponds to World(worldX, worldY)
-            // ScreenX = WorldX * zoom + vptX
-            // width/2 = worldX * zoom + vptX
-            // vptX = width/2 - worldX * zoom
+            // We want (worldX, worldY) to be at center of canvas
+            // vpt[4] = canvas.width/2 - worldX * zoom
+            const newVptX = (canvas.width / 2) - (worldX * zoom);
+            const newVptY = (canvas.height / 2) - (worldY * zoom);
             
-            const vpt = canvas.viewportTransform;
-            vpt[4] = (canvas.width / 2) - (worldX * zoom);
-            vpt[5] = (canvas.height / 2) - (worldY * zoom);
+            canvas.viewportTransform[4] = newVptX;
+            canvas.viewportTransform[5] = newVptY;
             
             canvas.requestRenderAll();
         }
@@ -1822,7 +1823,6 @@
         
         window.addEventListener('mousemove', (e) => {
             if (isNavigatingMinimap) {
-                // Calculate offset relative to canvas, not window
                 const rect = minimapCanvas.getBoundingClientRect();
                 const x = e.clientX - rect.left;
                 const y = e.clientY - rect.top;
