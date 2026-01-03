@@ -1,4 +1,4 @@
-# ShotLingo
+# Timo
 przygotuj plik który opisuje funkcjoalnosci aplikacji do tworzenia screenshotów dla app store i google store, aplikacja działa podobnie jak miro czy figma, czyli jest takim dużym boardem nieskończonym, i ona pozwala na przygotowanie blueprintów, templatów szablonów wiesz o co
   chodzi. Chce aby aplikacja miała taką prostą możliwość, że wszystkie teksty do każdego screenshota są zachowywane w pliku json, do którego mam dostęp od strony aplikacji, w jakimś fajnym panelu, który można pokaząć i ukryć. i tam ten json ma wszystkie teksty z tłumaczeniami
   które są nanoszone do aplikacji. Chodzi o to ze uzytkownik moze załadować screenshoty swojej aplikacji nanieść na nie teksty a te teksty są zapisywane do json'a w danym jezyku, i teraz użytkownik może skopiować tego json, poprosić szutczną inteligencję po to aby zrobił

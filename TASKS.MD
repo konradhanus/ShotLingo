@@ -1,5 +1,5 @@
 
-## Metryka Projektu: ShotLingo (Nazwa Robocza)
+## Metryka Projektu: Timo (Nazwa Robocza)
 *   **Typ projektu:** Web Application (SaaS) / Single Page Application (SPA).
 *   **Model:** Client-Side Rendering (CSR) – przetwarzanie grafiki w przeglądarce.
 *   **Platformy:** Desktop (Chrome/Safari/Edge), Tablet, Mobile (Mobile First Design).
@@ -8,8 +8,8 @@
 ---
 
 ## 1. Executive Summary
-**ShotLingo** to narzędzie graficzne typu "Infinite Canvas", które rewolucjonizuje proces tworzenia screenshotów do App Store i Google Play.
-Głównym problemem, który rozwiązuje aplikacja, jest zarządzanie tłumaczeniami na grafikach. Zamiast ręcznie edytować setki plików, **ShotLingo** centralizuje treści w jednym pliku JSON. Użytkownik projektuje raz, tłumaczy JSON przy pomocy AI (np. ChatGPT), a aplikacja automatycznie generuje warianty graficzne dla każdego języka i urządzenia.
+**Timo** to narzędzie graficzne typu "Infinite Canvas", które rewolucjonizuje proces tworzenia screenshotów do App Store i Google Play.
+Głównym problemem, który rozwiązuje aplikacja, jest zarządzanie tłumaczeniami na grafikach. Zamiast ręcznie edytować setki plików, **Timo** centralizuje treści w jednym pliku JSON. Użytkownik projektuje raz, tłumaczy JSON przy pomocy AI (np. ChatGPT), a aplikacja automatycznie generuje warianty graficzne dla każdego języka i urządzenia.
 
 ---
 

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>ShotLingo - App Store Screenshot Builder</title>
+    <title>Timo - App Store Screenshot Builder</title>
     
     <!-- External Libraries -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js"></script>
@@ -310,7 +310,7 @@
         <!-- Top Bar -->
         <div class="top-bar pointer-events-auto">
             <div class="logo">
-                <i class="fa-solid fa-layer-group"></i> <span>ShotLingo</span>
+                <i class="fa-solid fa-layer-group"></i> <span>Timo</span>
             </div>
             
             <div class="actions">
@@ -675,7 +675,7 @@
         canvas.on('text:changed', () => { saveHistory(); debouncedSave(); }); // Ensure text changes trigger save
 
         // --- LOCAL STORAGE PERSISTENCE (UPGRADED TO INDEXEDDB) ---
-        const LOCAL_STORAGE_KEY = 'shotlingo_v1_db';
+        const LOCAL_STORAGE_KEY = 'timo_v1_db';
         let saveTimeout = null;
 
         function debouncedSave() {
@@ -697,7 +697,9 @@
                 version: '1.1',
                 currentLang: state.currentLang,
                 translations: state.translations,
-                canvas: canvas.toJSON(['id', 'textId', 'isFrame', 'deviceName', 'isSafeArea', 'linkedFrameId', 'frameLabel'])
+                // Removed 'frameLabel' from toJSON to avoid circular refs/duplication. 
+                // We rely on 'linkedFrameId' and 'id' to restore links.
+                canvas: canvas.toJSON(['id', 'textId', 'isFrame', 'deviceName', 'isSafeArea', 'linkedFrameId'])
             };
 
             try {
@@ -736,11 +738,17 @@
                         const objects = canvas.getObjects();
                         // Restore frame-label links using IDs
                         const frames = objects.filter(o => o.isFrame);
-                        const labels = objects.filter(o => o.linkedFrameId);
+                        const linkedObjects = objects.filter(o => o.linkedFrameId);
 
-                        labels.forEach(label => {
-                            const frame = frames.find(f => f.id === label.linkedFrameId);
-                            if (frame) frame.frameLabel = label;
+                        linkedObjects.forEach(obj => {
+                            const frame = frames.find(f => f.id === obj.linkedFrameId);
+                            if (frame) {
+                                if (obj.isSafeArea) {
+                                    frame.safeArea = obj;
+                                } else {
+                                    frame.frameLabel = obj;
+                                }
+                            }
                         });
                         
                         canvas.renderAll();
@@ -800,6 +808,73 @@
             context.stroke();
         });
 
+        // --- CLIPPING / MASKING LOGIC ---
+        
+        function checkForClipping(obj) {
+            // Only apply to images as requested, or extend to all if needed
+            if (!obj || obj.isFrame || obj.type !== 'image') return;
+
+            const center = obj.getCenterPoint();
+            const frames = canvas.getObjects().filter(o => o.isFrame);
+            
+            // Find frame that contains the image center
+            const targetFrame = frames.find(f => f.containsPoint(center));
+            
+            if (targetFrame) {
+                // Create a clone of the frame to serve as the clip mask
+                // We use absolutePositioned = true so it works in world coordinates
+                const clipRect = new fabric.Rect({
+                    left: targetFrame.left,
+                    top: targetFrame.top,
+                    width: targetFrame.width,
+                    height: targetFrame.height,
+                    scaleX: targetFrame.scaleX,
+                    scaleY: targetFrame.scaleY,
+                    angle: targetFrame.angle,
+                    rx: targetFrame.rx,
+                    ry: targetFrame.ry,
+                    absolutePositioned: true,
+                    originX: targetFrame.originX,
+                    originY: targetFrame.originY
+                });
+
+                obj.clipPath = clipRect;
+                obj.clippedByFrameId = targetFrame.id;
+                obj.dirty = true;
+                // showToast("Obraz przycięty do ramki");
+            } else {
+                // Unclip if moved out
+                if (obj.clipPath) {
+                    obj.clipPath = null;
+                    delete obj.clippedByFrameId;
+                    obj.dirty = true;
+                }
+            }
+        }
+
+        function syncFrameClips(frame) {
+            if (!frame.isFrame) return;
+            
+            const objs = canvas.getObjects();
+            objs.forEach(obj => {
+                if (obj.clippedByFrameId === frame.id && obj.clipPath) {
+                    // Update the mask to match the frame's new transform
+                    obj.clipPath.set({
+                        left: frame.left,
+                        top: frame.top,
+                        width: frame.width,
+                        height: frame.height,
+                        scaleX: frame.scaleX,
+                        scaleY: frame.scaleY,
+                        angle: frame.angle,
+                        skewX: frame.skewX,
+                        skewY: frame.skewY
+                    });
+                    obj.dirty = true;
+                }
+            });
+        }
+
         // --- SNAPPING LOGIC ---
         const SNAP_DIST = 10;
         
@@ -808,7 +883,6 @@
             const vpt = canvas.viewportTransform;
             
             // Snap to Grid
-            // Simple approach: round position to nearest gridSize
             if (!e.e.shiftKey) { // Hold shift to disable snap
                 obj.left = Math.round(obj.left / gridSize) * gridSize;
                 obj.top = Math.round(obj.top / gridSize) * gridSize;
@@ -820,6 +894,19 @@
                     left: obj.left,
                     top: obj.top - 50 // Keep relative offset
                 });
+            }
+
+            // Sync clips if moving a frame
+            if (obj.isFrame) {
+                syncFrameClips(obj);
+                updateSafeAreaPosition(obj);
+            }
+        });
+
+        canvas.on('object:scaling', function(e) {
+            if (e.target.isFrame) {
+                syncFrameClips(e.target);
+                updateSafeAreaPosition(e.target);
             }
         });
 
@@ -917,8 +1004,12 @@
 
         canvas.on('mouse:down', function(opt) {
             var evt = opt.e;
-            // Alt Key or Pan Tool active
-            if (evt.altKey || document.getElementById('pan-tool').classList.contains('active')) {
+            // Alt Key, Pan Tool active, OR Middle Mouse Button (button === 1)
+            if (evt.altKey || document.getElementById('pan-tool').classList.contains('active') || evt.button === 1) {
+                if (evt.button === 1) {
+                    evt.preventDefault();
+                    evt.stopPropagation();
+                }
                 this.isDragging = true;
                 this.selection = false;
                 this.lastPosX = evt.clientX;
@@ -942,6 +1033,9 @@
             this.setViewportTransform(this.viewportTransform);
             this.isDragging = false;
             this.selection = true;
+            
+            // Check for clipping on drop
+            if (opt.target) checkForClipping(opt.target);
         });
 
         function togglePanMode() {
@@ -990,6 +1084,8 @@
             const config = FRAMES[type];
             if (!config) return;
 
+            const id = uuidv4();
+
             const rect = new fabric.Rect({
                 left: (window.innerWidth / 2 - config.width / 4) - canvas.viewportTransform[4],
                 top: (window.innerHeight / 2 - config.height / 4) - canvas.viewportTransform[5],
@@ -1003,7 +1099,8 @@
                 shadow: '0 10px 20px rgba(0,0,0,0.1)',
                 objectCaching: false,
                 isFrame: true, // Custom flag
-                deviceName: config.name
+                deviceName: config.name,
+                id: id
             });
             
             // Text Label for the frame
@@ -1014,7 +1111,8 @@
                 fill: '#64748b',
                 selectable: false,
                 evented: false,
-                excludeFromExport: true
+                excludeFromExport: true,
+                linkedFrameId: id
             });
 
             // Link them
@@ -1035,17 +1133,40 @@
         // ... [Image Handling and Drop logic same as before] ...
 
         // Safe Area Logic
+        function updateSafeAreaPosition(frame) {
+            if (!frame.safeArea) return;
+            const margin = Math.min(frame.width * frame.scaleX, frame.height * frame.scaleY) * 0.05;
+            frame.safeArea.set({
+                left: frame.left + margin,
+                top: frame.top + margin,
+                width: (frame.width * frame.scaleX) - (margin * 2),
+                height: (frame.height * frame.scaleY) - (margin * 2),
+                scaleX: 1, 
+                scaleY: 1,
+                angle: frame.angle
+            });
+            frame.safeArea.setCoords();
+        }
+
         function toggleSafeAreas(show) {
             const objects = canvas.getObjects();
             
             if (!show) {
                 // Remove existing safe areas
                 const overlays = objects.filter(o => o.isSafeArea);
-                overlays.forEach(o => canvas.remove(o));
+                overlays.forEach(o => {
+                    canvas.remove(o);
+                    if (o.linkedFrameId) {
+                         const frame = objects.find(f => f.id === o.linkedFrameId);
+                         if (frame) delete frame.safeArea;
+                    }
+                });
             } else {
                 // Add safe areas to all frames
                 const frames = objects.filter(o => o.isFrame);
                 frames.forEach(frame => {
+                    if (!frame.id) frame.id = uuidv4();
+
                     const margin = Math.min(frame.width * frame.scaleX, frame.height * frame.scaleY) * 0.05; // 5% margin
                     
                     const safeRect = new fabric.Rect({
@@ -1059,8 +1180,11 @@
                         strokeDashArray: [10, 10],
                         selectable: false,
                         evented: false,
-                        isSafeArea: true
+                        isSafeArea: true,
+                        linkedFrameId: frame.id
                     });
+                    
+                    frame.safeArea = safeRect;
                     canvas.add(safeRect);
                 });
             }
@@ -1512,7 +1636,7 @@
             // Generate ZIP
             zip.generateAsync({type:"blob"})
             .then(function(content) {
-                saveAs(content, "shotlingo_export.zip");
+                saveAs(content, "timo_export.zip");
                 showToast("Gotowe! Pobieranie...");
             });
         }
@@ -1558,15 +1682,24 @@
             // Calculate World Bounds (all objects)
             let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
             
+            // Helper to expand bounds
+            const expandBounds = (p) => {
+                if (p.x < minX) minX = p.x;
+                if (p.y < minY) minY = p.y;
+                if (p.x > maxX) maxX = p.x;
+                if (p.y > maxY) maxY = p.y;
+            };
+
             objects.forEach(obj => {
-                if (obj.excludeFromExport) return; // Skip helper labels if you want
-                const br = obj.getBoundingRect();
-                if (br.left < minX) minX = br.left;
-                if (br.top < minY) minY = br.top;
-                if (br.left + br.width > maxX) maxX = br.left + br.width;
-                if (br.top + br.height > maxY) maxY = br.top + br.height;
+                if (obj.excludeFromExport) return; 
+                // getCoords returns the 4 corners of the object in absolute scene coordinates
+                const coords = obj.getCoords();
+                coords.forEach(expandBounds);
             });
             
+            // If no valid objects found (e.g. all excluded), return
+            if (minX === Infinity) return;
+
             // Add padding to world bounds
             const padding = 200;
             minX -= padding;
@@ -1592,13 +1725,23 @@
             minimapCtx.fillStyle = '#cbd5e1';
             objects.forEach(obj => {
                 if (obj.excludeFromExport) return;
-                const br = obj.getBoundingRect();
                 
+                // Calculate AABB for the object from its coords for simple rect drawing
+                // Or draw polygon for precision (simpler to draw rects for minimap usually)
+                const coords = obj.getCoords();
+                let objMinX = Infinity, objMinY = Infinity, objMaxX = -Infinity, objMaxY = -Infinity;
+                coords.forEach(p => {
+                    if (p.x < objMinX) objMinX = p.x;
+                    if (p.y < objMinY) objMinY = p.y;
+                    if (p.x > objMaxX) objMaxX = p.x;
+                    if (p.y > objMaxY) objMaxY = p.y;
+                });
+
                 // Map to minimap coords
-                const x = offsetX + (br.left - minX) * minimapScale;
-                const y = offsetY + (br.top - minY) * minimapScale;
-                const w = br.width * minimapScale;
-                const h = br.height * minimapScale;
+                const x = offsetX + (objMinX - minX) * minimapScale;
+                const y = offsetY + (objMinY - minY) * minimapScale;
+                const w = (objMaxX - objMinX) * minimapScale;
+                const h = (objMaxY - objMinY) * minimapScale;
                 
                 minimapCtx.fillRect(x, y, w, h);
             });
@@ -1608,9 +1751,6 @@
             const zoom = canvas.getZoom();
             
             // Viewport in world coords
-            // visible TL = -vpt[4]/zoom, -vpt[5]/zoom
-            // visible width = canvas.width / zoom
-            
             const viewX = (-vpt[4] / zoom);
             const viewY = (-vpt[5] / zoom);
             const viewW = canvas.width / zoom;

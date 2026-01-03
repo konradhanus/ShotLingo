@@ -3,7 +3,7 @@ Oto profesjonalnie przygotowany dokument requirements.md, napisany z perspektywy
 requirements.md
 Metryka Projektu
 
-Typ projektu: Web Application (SaaS)
+Typ projektu: Web Application (SaaS) - Timo (Nazwa Projektu)
 
 Platforma: Przeglądarka internetowa (RWD: Desktop, Tablet, Mobile)
 
